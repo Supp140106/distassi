@@ -105,3 +105,71 @@ void* dispatcher_thread(void *arg) {
     }
     return NULL;
 }
+
+else if (type == REQUEST_TASK) {
+        printf("[%s] Worker connected, registering as idle...\n", client_ip);
+
+        Worker my_worker;
+        my_worker.sock = client_sock;
+        my_worker.assigned_task = NULL;
+        pthread_mutex_init(&my_worker.lock, NULL);
+        pthread_cond_init(&my_worker.cond, NULL);
+
+        while (1) {
+            enqueue_worker(&my_worker);
+
+            pthread_mutex_lock(&my_worker.lock);
+            while (my_worker.assigned_task == NULL) {
+                pthread_cond_wait(&my_worker.cond, &my_worker.lock);
+            }
+            Task *task = my_worker.assigned_task;
+            my_worker.assigned_task = NULL;
+            pthread_mutex_unlock(&my_worker.lock);
+
+            printf("[%s] Task assigned to worker, sending...\n", client_ip);
+
+            if (send(client_sock, &task->size, sizeof(int), 0) <= 0 ||
+                send(client_sock, task->data, task->size, 0) <= 0) {
+                printf("[%s] Worker disconnected during task send. Retrying task...\n", client_ip);
+                enqueue_task_front(task);
+                break;
+            }
+
+            int worker_id;
+            int output_size;
+
+            if (recv(client_sock, &worker_id, sizeof(int), 0) <= 0 ||
+                recv(client_sock, &output_size, sizeof(int), 0) <= 0) {
+                printf("[%s] Worker disconnected before sending result. Retrying task...\n", client_ip);
+                enqueue_task_front(task);
+                break;
+            }
+
+            char *output = malloc(output_size);
+            if (recv_all(client_sock, output, output_size) == -1) {
+                printf("[%s] Worker disconnected during output transfer. Retrying task...\n", client_ip);
+                enqueue_task_front(task);
+                free(output);
+                break;
+            }
+
+            printf("[%s] Result received from worker %d, forwarding to client...\n", client_ip, worker_id);
+
+            send(task->client_sock, &worker_id, sizeof(int), 0);
+            send(task->client_sock, &output_size, sizeof(int), 0);
+            send(task->client_sock, output, output_size, 0);
+
+            close(task->client_sock);
+
+            free(output);
+            free(task->data);
+            free(task);
+        }
+
+        close(client_sock);
+        pthread_mutex_destroy(&my_worker.lock);
+        pthread_cond_destroy(&my_worker.cond);
+    } else {
+        close(client_sock);
+    }
+}
