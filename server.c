@@ -206,3 +206,122 @@ else if (type == REQUEST_TASK) {
         close(client_sock);
     }
 }
+
+
+typedef struct {
+    int sock;
+    struct sockaddr_in addr;
+} ThreadArgs;
+
+void* thread_func(void *arg) {
+    ThreadArgs *args = (ThreadArgs*)arg;
+    int client_sock = args->sock;
+    struct sockaddr_in client_addr = args->addr;
+    free(args);
+
+    handle_connection(client_sock, client_addr);
+    return NULL;
+}
+
+int main() {
+    int server_fd;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+
+    init_queues();
+
+    pthread_t disp_tid;
+    pthread_create(&disp_tid, NULL, dispatcher_thread, NULL);
+    pthread_detach(disp_tid);
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt failed");
+        exit(EXIT_FAILURE);
+    }
+
+    int port = PORT;
+    char *env_port = getenv("PORT");
+    if (env_port) {
+        port = atoi(env_port);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_fd, 10) < 0) {
+        perror("Listen failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Print the local IP addresses to help the user connect from other machines
+    struct ifaddrs *ifaddr, *ifa;
+    char host[NI_MAXHOST];
+    printf("Server listening on port %d...\n", port);
+    printf("\n--- Connection Instructions ---\n");
+    printf("To connect from this machine (localhost):\n");
+    printf("  ./worker 127.0.0.1\n");
+    printf("  ./client 127.0.0.1\n\n");
+
+    printf("To connect from other machines, use one of your network IPs:\n");
+
+    if (getifaddrs(&ifaddr) == -1) {
+        perror("getifaddrs");
+    } else {
+        for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr == NULL) continue;
+            int family = ifa->ifa_addr->sa_family;
+            if (family == AF_INET) {
+                int s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in),
+                                   host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+                // Filter out localhost, docker interfaces, and bridge interfaces to reduce spam
+                if (s == 0 && strcmp(host, "127.0.0.1") != 0) {
+                    if (strncmp(ifa->ifa_name, "docker", 6) == 0 || strncmp(ifa->ifa_name, "br-", 3) == 0) {
+                        continue;
+                    }
+                    printf("  - IP: %-15s (Interface %s)\n", host, ifa->ifa_name);
+                }
+            }
+        }
+        freeifaddrs(ifaddr);
+    }
+    printf("    Example: ./worker <IP>\n");
+    printf("-------------------------------\n\n");
+    printf("Waiting for Workers and Clients to connect...\n");
+
+    while (1) {
+        addr_len = sizeof(client_addr);
+        int sock = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
+        if (sock < 0) {
+            perror("Accept failed");
+            continue;
+        }
+
+        ThreadArgs *args = malloc(sizeof(ThreadArgs));
+        args->sock = sock;
+        args->addr = client_addr;
+
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, thread_func, args) != 0) {
+            perror("Thread creation failed");
+            close(sock);
+            free(args);
+            continue;
+        }
+        pthread_detach(tid);
+    }
+
+    return 0;
+}
