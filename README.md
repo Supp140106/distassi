@@ -7,34 +7,55 @@ A C-based "Publisher-Subscriber" or broker model where a central Server routes c
 The lifecycle of a task follows a straightforward pull-based model for execution:
 
 ```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as Server.c
-    participant MQ as Message Queue
-    participant LB as Load balancer
-    participant FQ as Free Queue
-    participant W as Worker
-
-    W->>S: Connect / Register
-    S->>FQ: Enqueue Free Worker
-    
-    C->>C: Compile task.c -> task.out
-    C->>S: SUBMIT req + [File Size, Binary Data]
-    S->>MQ: Enqueue task
-    S-->>C: Await response...
-    
-    loop Load Balancing & Dispatch
-        LB->>MQ: Dequeue pending task
-        LB->>FQ: Dequeue free worker
-        LB->>W: Push task to worker [File Size, Binary Data]
+graph LR
+    subgraph Clients
+        C1[Client]
+        C2[Client]
+        C3[Client]
     end
-    
-    W->>W: Save temp file<br/>chmod +x<br/>Execute via popen()
-    W->>S: Return Result [Worker ID, Result Output]
-    Note right of W: Delete temp file
-    S->>FQ: Re-enqueue Worker as Free
-    S->>C: Forward Result to Client
-    C->>C: Print Output to Console
+
+    subgraph Server["Server.c"]
+        subgraph MQ["Message Queue"]
+            T1[task]
+            T2[task]
+            T3[task]
+        end
+        LB{Load balancer}
+    end
+
+    subgraph Workers
+        W1((Worker))
+        W2((worker))
+        W3((worker))
+        W4((worker))
+    end
+
+    subgraph FQ["Free Queue"]
+        B1[ ]
+        B2[ ]
+        B3[ ]
+    end
+
+    %% Connections
+    C1 & C2 & C3 --> MQ
+    MQ --> LB
+    LB --> W1 & W2 & W3 & W4
+
+    %% Styling
+    style Server fill:#333,stroke:#ccc,color:#fff
+    style MQ fill:#432,stroke:#d62,color:#f88
+    style LB fill:#242,stroke:#8c8,color:#8f8
+    style FQ fill:#333,stroke:#ccc,color:#fff
+    style B1 fill:#144,stroke:#48c
+    style B2 fill:#144,stroke:#48c
+    style B3 fill:#144,stroke:#48c
+    style W1 fill:#144,stroke:#48c,color:#fff
+    style W2 fill:#144,stroke:#48c,color:#fff
+    style W3 fill:#144,stroke:#48c,color:#fff
+    style W4 fill:#144,stroke:#48c,color:#fff
+    style C1 fill:#144,stroke:#48c,color:#fff
+    style C2 fill:#144,stroke:#48c,color:#fff
+    style C3 fill:#144,stroke:#48c,color:#fff
 ```
 
 ## System Components
