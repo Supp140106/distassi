@@ -88,13 +88,13 @@ You can deploy these pieces together locally (or to separate servers by configur
 **2. Start one or more Workers:**
 *(Open in a separate terminal. You can run as many workers as you want)*
 ```bash
-./worker
+./worker  <IP>
 ```
 
 **3. Submit a task:**
 *(Ensure you have a `task.c` file written locally)*
 ```bash
-./client
+./client <IP>
 ```
 
 ## Protocol Overview
