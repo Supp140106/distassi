@@ -8,30 +8,33 @@ The lifecycle of a task follows a straightforward pull-based model for execution
 
 ```mermaid
 sequenceDiagram
-    participant C as Client (Submitter)
-    participant S as Server (Broker)
-    participant Q as Task Queue
-    participant W as Worker (Executor)
+    participant C as Client
+    participant S as Server.c
+    participant MQ as Message Queue
+    participant LB as Load balancer
+    participant FQ as Free Queue
+    participant W as Worker
 
+    W->>S: Connect / Register
+    S->>FQ: Enqueue Free Worker
+    
     C->>C: Compile task.c -> task.out
     C->>S: SUBMIT req + [File Size, Binary Data]
-    S->>Q: Enqueue Task
+    S->>MQ: Enqueue task
     S-->>C: Await response...
     
-    loop Constant Polling
-        W->>S: REQUEST_TASK req
-        alt Queue has task
-            Q-->>S: Dequeue Task
-            S->>W: [File Size, Binary Data]
-            W->>W: Save as temp file<br/>chmod +x<br/>Execute via popen()
-            W->>S: Return [Worker ID, Result Output]
-            Note right of W: Delete temp file
-            S->>C: Forward [Worker ID, Result Output]
-            C->>C: Print Output to Console
-        else Queue is empty
-            S-->>W: Sleep / Wait
-        end
+    loop Load Balancing & Dispatch
+        LB->>MQ: Dequeue pending task
+        LB->>FQ: Dequeue free worker
+        LB->>W: Push task to worker [File Size, Binary Data]
     end
+    
+    W->>W: Save temp file<br/>chmod +x<br/>Execute via popen()
+    W->>S: Return Result [Worker ID, Result Output]
+    Note right of W: Delete temp file
+    S->>FQ: Re-enqueue Worker as Free
+    S->>C: Forward Result to Client
+    C->>C: Print Output to Console
 ```
 
 ## System Components
