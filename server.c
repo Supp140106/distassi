@@ -105,6 +105,39 @@ void* dispatcher_thread(void *arg) {
     }
     return NULL;
 }
+    void handle_connection(int client_sock, struct sockaddr_in client_addr) {
+    char client_ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+
+    int type;
+    if (recv(client_sock, &type, sizeof(int), 0) <= 0) {
+        close(client_sock);
+        return;
+    }
+
+    if (type == SUBMIT) {
+        int size;
+        if (recv(client_sock, &size, sizeof(int), 0) <= 0) {
+            close(client_sock);
+            return;
+        }
+
+        char *data = malloc(size);
+        if (recv_all(client_sock, data, size) == -1) {
+            free(data);
+            close(client_sock);
+            return;
+        }
+
+        Task *task = malloc(sizeof(Task));
+        task->size = size;
+        task->data = data;
+        task->client_sock = client_sock;
+
+        enqueue_task(task);
+        printf("[%s] Task received and queued (size=%d)\n", client_ip, size);
+    
+    }
 
 else if (type == REQUEST_TASK) {
         printf("[%s] Worker connected, registering as idle...\n", client_ip);
