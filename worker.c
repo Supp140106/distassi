@@ -52,3 +52,50 @@ int main(int argc, char *argv[]) {
             sock = -1;
             continue;
         }
+char filename[256];
+        sprintf(filename, "received_task_%d.out", getpid());
+        FILE *f = fopen(filename, "wb");
+        fwrite(buffer, 1, size, f);
+        fclose(f);
+
+        chmod(filename, 0755);
+
+        printf("Executing task...\n");
+        char cmd[512];
+        sprintf(cmd, "./%s", filename);
+        FILE *pipe = popen(cmd, "r");
+        if (!pipe) {
+            perror("popen failed");
+            close(sock);
+            free(buffer);
+            continue;
+        }
+
+        char output_buffer[4096] = {0};
+        int total_read = 0;
+        while (fgets(output_buffer + total_read, sizeof(output_buffer) - total_read, pipe) != NULL) {
+            total_read = strlen(output_buffer);
+        }
+        pclose(pipe);
+
+        int worker_id = getpid();
+        if (send(sock, &worker_id, sizeof(int), 0) <= 0 ||
+            send(sock, &total_read, sizeof(int), 0) <= 0 ||
+            send(sock, output_buffer, total_read, 0) <= 0) {
+            printf("Network error during result send. Reconnecting...\n");
+            close(sock);
+            sock = -1;
+            free(buffer);
+            remove(filename);
+            continue;
+        }
+
+        printf("Task completed. Output sent back to server.\n");
+
+        free(buffer);
+        remove(filename);
+        // Loop back to wait for the next task on the same socket
+    }
+
+    return 0;
+}
