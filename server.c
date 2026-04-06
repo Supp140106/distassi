@@ -1,4 +1,5 @@
-
+//begin Ranjith
+// server.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,6 +80,9 @@ void enqueue_worker(Worker *w) {
     pthread_cond_signal(&dispatch_cond);
     pthread_mutex_unlock(&dispatch_lock);
 }
+//end Ranjith
+//begin sahanasri
+
 void* dispatcher_thread(void *arg) {
     while (1) {
         pthread_mutex_lock(&dispatch_lock);
@@ -105,7 +109,11 @@ void* dispatcher_thread(void *arg) {
     }
     return NULL;
 }
-    void handle_connection(int client_sock, struct sockaddr_in client_addr) {
+//end sahanasri
+//begin saikrishna
+
+
+void handle_connection(int client_sock, struct sockaddr_in client_addr) {
     char client_ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
 
@@ -136,10 +144,12 @@ void* dispatcher_thread(void *arg) {
 
         enqueue_task(task);
         printf("[%s] Task received and queued (size=%d)\n", client_ip, size);
-    
+        // Do not close client_sock here, we need it to send the result later
     }
+//end saikrishna
+//begin Vamsi
 
-else if (type == REQUEST_TASK) {
+    else if (type == REQUEST_TASK) {
         printf("[%s] Worker connected, registering as idle...\n", client_ip);
 
         Worker my_worker;
@@ -206,7 +216,8 @@ else if (type == REQUEST_TASK) {
         close(client_sock);
     }
 }
-
+//end Vamsi
+//begin supprit
 
 typedef struct {
     int sock;
@@ -325,3 +336,4 @@ int main() {
 
     return 0;
 }
+//end supprit
