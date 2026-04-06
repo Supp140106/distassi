@@ -1,3 +1,4 @@
+//begin ashok
 #include "common.h"
 #include <sys/socket.h>
 #include <netdb.h>
@@ -41,3 +42,4 @@ int connect_to_server(const char *hostname, const char *port) {
     freeaddrinfo(res);
     return sockfd;
 }
+//end ashok
