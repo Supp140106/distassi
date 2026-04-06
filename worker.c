@@ -1,3 +1,5 @@
+//begin dheerajpateru
+// worker.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -52,7 +54,10 @@ int main(int argc, char *argv[]) {
             sock = -1;
             continue;
         }
-char filename[256];
+//end dheerajpateru
+//begin pallavi
+
+        char filename[256];
         sprintf(filename, "received_task_%d.out", getpid());
         FILE *f = fopen(filename, "wb");
         fwrite(buffer, 1, size, f);
@@ -99,3 +104,4 @@ char filename[256];
 
     return 0;
 }
+//end pallavi
