@@ -1,6 +1,7 @@
 // begin Ranjith
 //  server.c
 #include "common.h"
+#include "logger.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <ifaddrs.h>
@@ -111,8 +112,14 @@ void *dashboard_thread(void *arg) {
            "=====================\n");
     printf("Total Workers: %d\n", count);
     printf("Recent Events:\n");
-    // We will just let printf log below this
-    // Actually, we can just print \n
+    logger_lock();
+    for (int i = 0; i < LOG_RING_SIZE; i++) {
+      const char *line = logger_get_line(i);
+      if (line[0] != '\0') {
+        printf("  %s\n", line);
+      }
+    }
+    logger_unlock();
     pthread_mutex_unlock(&all_workers_lock);
     sleep(1);
   }
@@ -201,6 +208,9 @@ void *dispatcher_thread(void *arg) {
     pthread_cond_signal(&worker->cond);
     pthread_mutex_unlock(&worker->lock);
 
+    log_event(LOG_INFO, "event=task_dispatched worker_id=%d task_size=%d",
+              worker->worker_id, task->size);
+
     pthread_mutex_unlock(&dispatch_lock);
   }
   return NULL;
@@ -238,8 +248,8 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
     task->client_sock = client_sock;
 
     enqueue_task(task);
-    // UI is handled by dashboard, don't overwhelm console
-    // printf("[%s] Task received and queued (size=%d)\n", client_ip, size);
+    log_event(LOG_INFO, "event=task_queued client_ip=%s task_size=%d",
+              client_ip, size);
     // Do not close client_sock here, we need it to send the result later
   }
   // end saikrishna
@@ -284,6 +294,8 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
     pthread_cond_init(&my_worker.cond, NULL);
 
     add_worker_global(&my_worker);
+    log_event(LOG_INFO, "event=worker_connected worker_id=%d ip=%s",
+              worker_id, client_ip);
 
     while (1) {
       my_worker.status = 0; // IDLE
@@ -299,8 +311,15 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
       my_worker.start_time = time(NULL);
       pthread_mutex_unlock(&my_worker.lock);
 
+      log_event(LOG_INFO, "event=task_sending worker_id=%d task_size=%d",
+                my_worker.worker_id, task->size);
+
       if (send(client_sock, &task->size, sizeof(int), 0) <= 0 ||
           send(client_sock, task->data, task->size, 0) <= 0) {
+        log_event(LOG_ERROR, "event=task_send_failed worker_id=%d",
+                  my_worker.worker_id);
+        log_event(LOG_WARN, "event=task_requeued task_size=%d reason=send_failure",
+                  task->size);
         enqueue_task_front(task);
         break;
       }
@@ -310,6 +329,10 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
 
       if (recv(client_sock, &worker_id, sizeof(int), 0) <= 0 ||
           recv(client_sock, &output_size, sizeof(int), 0) <= 0) {
+        log_event(LOG_ERROR, "event=result_recv_failed worker_id=%d",
+                  my_worker.worker_id);
+        log_event(LOG_WARN, "event=task_requeued task_size=%d reason=recv_failure",
+                  task->size);
         enqueue_task_front(task);
         break;
       }
@@ -318,14 +341,29 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
 
       char *output = malloc(output_size);
       if (recv_all(client_sock, output, output_size) == -1) {
+        log_event(LOG_ERROR,
+                  "event=result_data_failed worker_id=%d output_size=%d",
+                  worker_id, output_size);
+        log_event(LOG_WARN, "event=task_requeued task_size=%d reason=recv_failure",
+                  task->size);
         enqueue_task_front(task);
         free(output);
         break;
       }
 
+      time_t end_time = time(NULL);
+      long duration_sec = (long)(end_time - my_worker.start_time);
+      log_event(LOG_INFO,
+                "event=task_completed worker_id=%d output_size=%d duration_sec=%ld",
+                worker_id, output_size, duration_sec);
+
       send(task->client_sock, &worker_id, sizeof(int), 0);
       send(task->client_sock, &output_size, sizeof(int), 0);
       send(task->client_sock, output, output_size, 0);
+
+      log_event(LOG_INFO,
+                "event=result_relayed worker_id=%d client_fd=%d output_size=%d",
+                worker_id, task->client_sock, output_size);
 
       close(task->client_sock);
 
@@ -334,6 +372,8 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
       free(task);
     }
 
+    log_event(LOG_WARN, "event=worker_disconnected worker_id=%d ip=%s",
+              my_worker.worker_id, my_worker.client_ip);
     remove_worker_global(&my_worker);
     close(client_sock);
     pthread_mutex_destroy(&my_worker.lock);
@@ -362,6 +402,7 @@ void *thread_func(void *arg) {
 
 int main() {
   signal(SIGPIPE, SIG_IGN);
+  logger_init("SERVER", "server.log", 0);
 
   int server_fd;
   struct sockaddr_in server_addr, client_addr;

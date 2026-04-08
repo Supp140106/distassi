@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "common.h"
+#include "logger.h"
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
@@ -122,6 +123,14 @@ void *worker_dashboard_thread(void *arg) {
     printf("Sys RAM:   %.1f%%\n", mem_usage);
     printf("====================================================\n");
     printf("Recent Events:\n");
+    logger_lock();
+    for (int i = 0; i < LOG_RING_SIZE; i++) {
+      const char *line = logger_get_line(i);
+      if (line[0] != '\0') {
+        printf("  %s\n", line);
+      }
+    }
+    logger_unlock();
     sleep(1);
   }
   return NULL;
@@ -129,6 +138,10 @@ void *worker_dashboard_thread(void *arg) {
 
 int main(int argc, char *argv[]) {
   signal(SIGPIPE, SIG_IGN);
+
+  char worker_log[64];
+  sprintf(worker_log, "worker_%d.log", getpid());
+  logger_init("WORKER", worker_log, 0);
 
   sprintf(current_server_port, "%d", PORT);
 
@@ -154,8 +167,10 @@ int main(int argc, char *argv[]) {
         char discovered_ip[64];
         if (discover_server(discovered_ip, delay)) {
           strcpy(current_server_ip, discovered_ip);
+          log_event(LOG_INFO, "event=server_discovered ip=%s", discovered_ip);
         } else {
           // Timer expired without hearing a server => I BECOME the new server!
+          log_event(LOG_WARN, "event=promoting_to_server reason=election_timeout");
           execl("./server", "./server", NULL);
           // If execl returns, it failed
           perror("execl failed to spawn server");
@@ -168,10 +183,13 @@ int main(int argc, char *argv[]) {
       send(current_sock, &req_type, sizeof(int), 0);
       send(current_sock, &my_id, sizeof(int), 0);
       worker_state = 1; // IDLE
+      log_event(LOG_INFO, "event=connected_to_server ip=%s worker_id=%d",
+                current_server_ip, my_id);
     }
 
     int size;
     if (recv(current_sock, &size, sizeof(int), 0) <= 0) {
+      log_event(LOG_WARN, "event=server_connection_lost stage=recv_size");
       close(current_sock);
       current_sock = -1;
       continue;
@@ -179,6 +197,8 @@ int main(int argc, char *argv[]) {
 
     char *buffer = malloc(size);
     if (recv_all(current_sock, buffer, size) == -1) {
+      log_event(LOG_WARN, "event=server_connection_lost stage=recv_data "
+                "task_size=%d", size);
       free(buffer);
       close(current_sock);
       current_sock = -1;
@@ -187,6 +207,7 @@ int main(int argc, char *argv[]) {
 
     worker_state = 2; // WORKING
     task_start_time = time(NULL);
+    log_event(LOG_INFO, "event=task_received task_size=%d", size);
     // end dheerajpateru
     // begin pallavi
 
@@ -198,11 +219,17 @@ int main(int argc, char *argv[]) {
 
     chmod(filename, 0755);
 
-    printf("Executing task...\n");
+    log_event(LOG_INFO, "event=task_executing filename=%s task_size=%d",
+              filename, size);
+
+    struct timespec exec_start, exec_end;
+    clock_gettime(CLOCK_MONOTONIC, &exec_start);
+
     char cmd[512];
     sprintf(cmd, "./%s", filename);
     FILE *pipe = popen(cmd, "r");
     if (!pipe) {
+      log_event(LOG_ERROR, "event=popen_failed filename=%s", filename);
       perror("popen failed");
       close(current_sock);
       current_sock = -1;
@@ -224,16 +251,32 @@ int main(int argc, char *argv[]) {
     }
     pclose(pipe);
 
+    clock_gettime(CLOCK_MONOTONIC, &exec_end);
+    double exec_duration_ms = (exec_end.tv_sec - exec_start.tv_sec) * 1000.0 +
+                              (exec_end.tv_nsec - exec_start.tv_nsec) / 1e6;
+    log_event(LOG_INFO,
+              "event=task_executed duration_ms=%.1f output_size=%d",
+              exec_duration_ms, total_read);
+
     int worker_id = getpid();
     if (send(current_sock, &worker_id, sizeof(int), 0) <= 0 ||
         send(current_sock, &total_read, sizeof(int), 0) <= 0 ||
         send(current_sock, output_buffer, total_read, 0) <= 0) {
+      log_event(LOG_ERROR,
+                "event=result_send_failed worker_id=%d output_size=%d",
+                worker_id, total_read);
       close(current_sock);
       current_sock = -1;
       free(buffer);
       remove(filename);
       continue;
     }
+
+    long total_elapsed = (long)(time(NULL) - task_start_time);
+    log_event(LOG_INFO,
+              "event=result_sent worker_id=%d output_size=%d "
+              "total_sec=%ld exec_ms=%.1f",
+              worker_id, total_read, total_elapsed, exec_duration_ms);
 
     free(buffer);
     remove(filename);
