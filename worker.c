@@ -21,6 +21,13 @@ int worker_state =
 time_t task_start_time = 0;
 int current_sock = -1;
 
+/* ── enter alternate screen once at startup ────────────── */
+static void enter_alt_screen(void) {
+  printf("\033[?1049h"); // Enter alternate screen buffer
+  printf("\033[?25l");   // Hide cursor
+  fflush(stdout);
+}
+
 int get_cpu_idle_total(long long *idle, long long *total) {
   FILE *fp = fopen("/proc/stat", "r");
   if (!fp)
@@ -46,11 +53,13 @@ int get_cpu_idle_total(long long *idle, long long *total) {
 void *worker_dashboard_thread(void *arg) {
   (void)arg;
   while (1) {
-    printf("\033[?25l\033[H\033[J");
-    printf("====================================================\n");
-    printf("  WORKER DASHBOARD (Worker ID: %d)\n", getpid());
-    printf("====================================================\n");
-    printf("Server IP: %s\n", current_server_ip);
+    // Jump to top-left of the alternate screen and clear it — never scrolls
+    printf("\033[H\033[2J");
+
+    printf("╔══════════════════════════════════════════════╗\n");
+    printf("║   WORKER DASHBOARD  ─  PID %-6d            ║\n", getpid());
+    printf("╠══════════════════════════════════════════════╣\n");
+    printf("║  Server IP  : %-30s║\n", current_server_ip);
 
     if (current_sock != -1 && worker_state != 0) {
       char buf;
@@ -64,12 +73,12 @@ void *worker_dashboard_thread(void *arg) {
     long long idle, total;
     double cpu_usage = 0.0;
     if (get_cpu_idle_total(&idle, &total) == 0) {
-      long long diff_idle = idle - prev_idle;
+      long long diff_idle  = idle  - prev_idle;
       long long diff_total = total - prev_total;
       if (diff_total > 0) {
         cpu_usage = 100.0 * (1.0 - (double)diff_idle / diff_total);
       }
-      prev_idle = idle;
+      prev_idle  = idle;
       prev_total = total;
     }
 
@@ -90,47 +99,62 @@ void *worker_dashboard_thread(void *arg) {
       }
     }
 
+    // Send stats to server (non-blocking; skip if not connected)
     if (current_sock != -1 && worker_state != 0 && worker_state != 3 &&
         current_server_port[0] != '\0') {
       int stat_sock = connect_to_server(current_server_ip, current_server_port);
       if (stat_sock >= 0) {
-        int type = SEND_STATS;
+        int type  = SEND_STATS;
         int my_id = getpid();
-        send(stat_sock, &type, sizeof(int), 0);
-        send(stat_sock, &my_id, sizeof(int), 0);
+        send(stat_sock, &type,      sizeof(int),    0);
+        send(stat_sock, &my_id,     sizeof(int),    0);
         send(stat_sock, &cpu_usage, sizeof(double), 0);
         send(stat_sock, &mem_usage, sizeof(double), 0);
         close(stat_sock);
       }
     }
 
+    // Colour thresholds
+    const char *cpu_color = (cpu_usage > 80.0) ? "\033[31m" : "\033[32m";
+    const char *ram_color = (mem_usage > 80.0) ? "\033[31m" : "\033[32m";
+
+    printf("║  Sys CPU    : %s%.1f%%\033[0m%-24s║\n", cpu_color, cpu_usage, "");
+    printf("║  Sys RAM    : %s%.1f%%\033[0m%-24s║\n", ram_color, mem_usage, "");
+
     char status_str[64];
-    char duration_str[64] = "-";
+    char duration_str[32] = "-";
     if (worker_state == 0) {
-      sprintf(status_str, "\033[31mRECONNECTING / ELECTION\033[0m");
+      snprintf(status_str, sizeof(status_str),
+               "\033[31mRECONNECTING / ELECTION\033[0m");
     } else if (worker_state == 1) {
-      sprintf(status_str, "\033[32mIDLE (Connected)\033[0m");
+      snprintf(status_str, sizeof(status_str), "\033[32mIDLE (Connected)\033[0m");
     } else if (worker_state == 2) {
-      sprintf(status_str, "\033[33mWORKING\033[0m");
+      snprintf(status_str, sizeof(status_str), "\033[33mWORKING\033[0m");
       time_t now = time(NULL);
-      sprintf(duration_str, "%lds", now - task_start_time);
+      snprintf(duration_str, sizeof(duration_str), "%lds",
+               now - task_start_time);
     } else if (worker_state == 3) {
-      sprintf(status_str, "\033[31mSERVER OFFLINE (Task will fail)\033[0m");
+      snprintf(status_str, sizeof(status_str),
+               "\033[31mSERVER OFFLINE\033[0m");
     }
-    printf("Status:    %s\n", status_str);
-    printf("Duration:  %s\n", duration_str);
-    printf("Sys CPU:   %.1f%%\n", cpu_usage);
-    printf("Sys RAM:   %.1f%%\n", mem_usage);
-    printf("====================================================\n");
-    printf("Recent Events:\n");
+
+    printf("║  Status     : %-30s║\n", status_str);
+    printf("║  Duration   : %-30s║\n", duration_str);
+    printf("╠══════════════════════════════════════════════╣\n");
+    printf("║  Recent Events:                              ║\n");
     logger_lock();
     for (int i = 0; i < LOG_RING_SIZE; i++) {
       const char *line = logger_get_line(i);
       if (line[0] != '\0') {
-        printf("  %s\n", line);
+        char safe[45];
+        snprintf(safe, sizeof(safe), "%-43s", line);
+        printf("║  %s║\n", safe);
       }
     }
     logger_unlock();
+    printf("╚══════════════════════════════════════════════╝\n");
+
+    fflush(stdout);
     sleep(1);
   }
   return NULL;
@@ -152,6 +176,9 @@ int main(int argc, char *argv[]) {
     strcpy(current_server_port, argv[2]);
   }
 
+  // Enter the alternate screen so the TUI never pollutes terminal scrollback
+  enter_alt_screen();
+
   pthread_t dash_tid;
   pthread_create(&dash_tid, NULL, worker_dashboard_thread, NULL);
   pthread_detach(dash_tid);
@@ -170,7 +197,8 @@ int main(int argc, char *argv[]) {
           log_event(LOG_INFO, "event=server_discovered ip=%s", discovered_ip);
         } else {
           // Timer expired without hearing a server => I BECOME the new server!
-          log_event(LOG_WARN, "event=promoting_to_server reason=election_timeout");
+          log_event(LOG_WARN,
+                    "event=promoting_to_server reason=election_timeout");
           execl("./server", "./server", NULL);
           // If execl returns, it failed
           perror("execl failed to spawn server");
@@ -179,9 +207,9 @@ int main(int argc, char *argv[]) {
         continue;
       }
       int req_type = REQUEST_TASK;
-      int my_id = getpid();
+      int my_id    = getpid();
       send(current_sock, &req_type, sizeof(int), 0);
-      send(current_sock, &my_id, sizeof(int), 0);
+      send(current_sock, &my_id,    sizeof(int), 0);
       worker_state = 1; // IDLE
       log_event(LOG_INFO, "event=connected_to_server ip=%s worker_id=%d",
                 current_server_ip, my_id);
@@ -197,15 +225,16 @@ int main(int argc, char *argv[]) {
 
     char *buffer = malloc(size);
     if (recv_all(current_sock, buffer, size) == -1) {
-      log_event(LOG_WARN, "event=server_connection_lost stage=recv_data "
-                "task_size=%d", size);
+      log_event(LOG_WARN,
+                "event=server_connection_lost stage=recv_data task_size=%d",
+                size);
       free(buffer);
       close(current_sock);
       current_sock = -1;
       continue;
     }
 
-    worker_state = 2; // WORKING
+    worker_state    = 2; // WORKING
     task_start_time = time(NULL);
     log_event(LOG_INFO, "event=task_received task_size=%d", size);
     // end dheerajpateru
@@ -238,30 +267,24 @@ int main(int argc, char *argv[]) {
     }
 
     char output_buffer[4096] = {0};
-    int total_read = 0;
-    while (fgets(output_buffer + total_read, sizeof(output_buffer) - total_read,
-                 pipe) != NULL) {
+    int  total_read = 0;
+    while (fgets(output_buffer + total_read,
+                 sizeof(output_buffer) - total_read, pipe) != NULL) {
       total_read = strlen(output_buffer);
-
-      // We can also periodically check connection status while working
-      if (worker_state == 3) {
-        // You could optionally break here to kill the task early,
-        // or just continue and let the send fail later.
-      }
     }
     pclose(pipe);
 
     clock_gettime(CLOCK_MONOTONIC, &exec_end);
-    double exec_duration_ms = (exec_end.tv_sec - exec_start.tv_sec) * 1000.0 +
-                              (exec_end.tv_nsec - exec_start.tv_nsec) / 1e6;
-    log_event(LOG_INFO,
-              "event=task_executed duration_ms=%.1f output_size=%d",
+    double exec_duration_ms =
+        (exec_end.tv_sec  - exec_start.tv_sec)  * 1000.0 +
+        (exec_end.tv_nsec - exec_start.tv_nsec) / 1e6;
+    log_event(LOG_INFO, "event=task_executed duration_ms=%.1f output_size=%d",
               exec_duration_ms, total_read);
 
     int worker_id = getpid();
-    if (send(current_sock, &worker_id, sizeof(int), 0) <= 0 ||
-        send(current_sock, &total_read, sizeof(int), 0) <= 0 ||
-        send(current_sock, output_buffer, total_read, 0) <= 0) {
+    if (send(current_sock, &worker_id,     sizeof(int), 0) <= 0 ||
+        send(current_sock, &total_read,    sizeof(int), 0) <= 0 ||
+        send(current_sock, output_buffer, total_read,   0) <= 0) {
       log_event(LOG_ERROR,
                 "event=result_send_failed worker_id=%d output_size=%d",
                 worker_id, total_read);
