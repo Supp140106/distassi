@@ -23,6 +23,26 @@
 #include <time.h>
 
 /* ── per-task context passed to each thread ─────────────── */
+typedef enum {
+  ST_PENDING,
+  ST_COMPILING,
+  ST_SUBMITTING,
+  ST_WAITING,
+  ST_COMPLETED,
+  ST_FAILED
+} TaskStatus;
+
+typedef struct {
+  char source_file[256];
+  TaskStatus status;
+  int worker_id;
+  double duration_ms;
+} TaskState;
+
+TaskState *g_states = NULL;
+int g_num_tasks = 0;
+pthread_mutex_t g_states_lock = PTHREAD_MUTEX_INITIALIZER;
+
 typedef struct {
   char server_ip[64];
   char port[16];
@@ -30,9 +50,67 @@ typedef struct {
   int  task_index;       // 0-based
 } TaskCtx;
 
+static int g_cli_dash_height = 8;
+
+static void setup_ui(int num_tasks) {
+  int dash_h = num_tasks + 6;
+  if (dash_h > 24) dash_h = 24; // Cap it
+  g_cli_dash_height = dash_h;
+  printf("\033[2J\033[%d;r\033[H\033[%d;1H", g_cli_dash_height + 1, g_cli_dash_height + 1);
+  fflush(stdout);
+}
+
+
+
+
+void *client_dashboard_thread(void *arg) {
+  int num_tasks = *(int *)arg;
+  int dash_h = num_tasks + 6;
+  if (dash_h > 20) dash_h = 20;
+
+  while (1) {
+    pthread_mutex_lock(&g_states_lock);
+    printf("\033[s\033[H");
+
+    printf("╔══════════════════════════════════════════════════════════════════════════╗\n");
+    printf("║ \033[1;35mCLIENT TASK MONITOR\033[0m                                                  ║\n");
+    printf("╠══════════════════════════════╤════════════════╤════════════╤═════════════╣\n");
+    printf("║ \033[1mSource File\033[0m                  │ \033[1mStatus\033[0m         │ \033[1mWorker\033[0m     │ \033[1mTime (ms)\033[0m   ║\n");
+    printf("╟──────────────────────────────┼────────────────┼────────────┼─────────────╢\n");
+
+    for (int i = 0; i < num_tasks && i < 14; i++) {
+        const char *st_text = "UNKNOWN";
+        const char *st_color = "\033[0m";
+        switch (g_states[i].status) {
+            case ST_PENDING:    st_text = "PENDING";    st_color = "\033[30;1m"; break;
+            case ST_COMPILING:  st_text = "COMPILING";  st_color = "\033[36m";   break;
+            case ST_SUBMITTING: st_text = "SUBMITTING"; st_color = "\033[33m";   break;
+            case ST_WAITING:    st_text = "WAITING";    st_color = "\033[34m";   break;
+            case ST_COMPLETED:  st_text = "COMPLETED";  st_color = "\033[32m";   break;
+            case ST_FAILED:     st_text = "FAILED";     st_color = "\033[31m";   break;
+        }
+        printf("║ %-28.28s │ %s%-14s\033[0m │ %-10d │ %-11.1f ║\n",
+               g_states[i].source_file, st_color, st_text,
+               g_states[i].worker_id, g_states[i].duration_ms);
+    }
+    printf("╚══════════════════════════════╧════════════════╧════════════╧═════════════╝\n");
+
+    printf("\033[u");
+    fflush(stdout);
+    pthread_mutex_unlock(&g_states_lock);
+    usleep(200000); // 200ms
+  }
+  return NULL;
+}
+
+
 /* ── compile + connect + submit + receive (one task) ─────── */
 static void *submit_task(void *arg) {
   TaskCtx *ctx = (TaskCtx *)arg;
+  pthread_mutex_lock(&g_states_lock);
+
+  g_states[ctx->task_index].status = ST_COMPILING;
+  pthread_mutex_unlock(&g_states_lock);
 
   /* ── 1. compile ──────────────────────────────────────── */
   // Each thread uses its own unique output binary to avoid collisions
@@ -46,11 +124,16 @@ static void *submit_task(void *arg) {
 
   int ret = system(compile_cmd);
   if (ret != 0) {
+    pthread_mutex_lock(&g_states_lock);
+    g_states[ctx->task_index].status = ST_FAILED;
+    pthread_mutex_unlock(&g_states_lock);
+
     fprintf(stderr, "[task %d] Compilation FAILED for %s\n",
             ctx->task_index, ctx->source_file);
     free(ctx);
     return NULL;
   }
+
   log_event(LOG_INFO, "event=task_compiled index=%d source=%s binary=%s",
             ctx->task_index, ctx->source_file, out_bin);
 
@@ -94,15 +177,24 @@ static void *submit_task(void *arg) {
     }
 
     /* send task */
+    pthread_mutex_lock(&g_states_lock);
+    g_states[ctx->task_index].status = ST_SUBMITTING;
+    pthread_mutex_unlock(&g_states_lock);
+
     send(sock, &(int){SUBMIT}, sizeof(int), 0);
     send(sock, &size,           sizeof(int), 0);
     send(sock, buffer,          size,        0);
     clock_gettime(CLOCK_MONOTONIC, &submit_start);
 
+    pthread_mutex_lock(&g_states_lock);
+    g_states[ctx->task_index].status = ST_WAITING;
+    pthread_mutex_unlock(&g_states_lock);
+
     log_event(LOG_INFO,
               "event=task_submitted index=%d server_ip=%s task_size=%d "
               "source=%s",
               ctx->task_index, current_ip, size, ctx->source_file);
+
 
     /* ── 4. receive result ───────────────────────────── */
     int worker_id, output_size;
@@ -126,22 +218,29 @@ static void *submit_task(void *arg) {
 
       struct timespec submit_end;
       clock_gettime(CLOCK_MONOTONIC, &submit_end);
-      double wait_ms =
-          (submit_end.tv_sec  - submit_start.tv_sec)  * 1000.0 +
-          (submit_end.tv_nsec - submit_start.tv_nsec) / 1e6;
+      double wait_ms = (submit_end.tv_sec - submit_start.tv_sec) * 1000.0 +
+                       (submit_end.tv_nsec - submit_start.tv_nsec) / 1e6;
+
+      pthread_mutex_lock(&g_states_lock);
+      g_states[ctx->task_index].status = ST_COMPLETED;
+      g_states[ctx->task_index].worker_id = worker_id;
+      g_states[ctx->task_index].duration_ms = wait_ms;
+      pthread_mutex_unlock(&g_states_lock);
+
 
       log_event(LOG_INFO,
                 "event=result_received index=%d worker_id=%d "
                 "output_size=%d round_trip_ms=%.1f",
                 ctx->task_index, worker_id, output_size, wait_ms);
 
-      printf("\n╔══════════════════════════════════════════╗\n");
-      printf("║  Task %-3d ─ %s\n", ctx->task_index, ctx->source_file);
-      printf("║  Worker ID  : %d\n", worker_id);
-      printf("║  Round-trip : %.1f ms\n", wait_ms);
-      printf("╠══════════════════════════════════════════╣\n");
+      // Print result to scroll area
+      printf("\n\033[1;32m[RESULT] Task %d (%s) from Worker %d (%.1f ms):\033[0m\n",
+             ctx->task_index, ctx->source_file, worker_id, wait_ms);
+      printf("--------------------------------------------------\n");
       printf("%s\n", output);
-      printf("╚══════════════════════════════════════════╝\n");
+      printf("--------------------------------------------------\n");
+
+
 
       free(output);
       close(sock);
@@ -201,7 +300,19 @@ int main(int argc, char *argv[]) {
     num_files = 1;
   }
 
-  printf("Submitting %d task(s) to %s:%s\n", num_files, server_ip, port);
+  /* initialize states */
+  g_num_tasks = num_files;
+  g_states = calloc(num_files, sizeof(TaskState));
+  for (int i = 0; i < num_files; i++) {
+    strncpy(g_states[i].source_file, files[i], 255);
+    g_states[i].status = ST_PENDING;
+  }
+
+  // Setup the TUI with fixed header and scrolling region
+  setup_ui(num_files);
+
+  pthread_t dash_tid;
+  pthread_create(&dash_tid, NULL, client_dashboard_thread, &num_files);
 
   /* spawn one thread per file */
   pthread_t *tids = malloc(num_files * sizeof(pthread_t));
@@ -227,8 +338,14 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // Final update and let the TUI finish
+  sleep(1);
+  printf("\033[%d;1H\nAll tasks completed.\n", g_cli_dash_height + 1);
+
   free(tids);
-  printf("\nAll tasks completed.\n");
+
+  free(g_states);
   return 0;
 }
+
 // end Ayushchandra

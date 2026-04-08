@@ -67,101 +67,142 @@ void remove_worker_global(Worker *w) {
   pthread_mutex_unlock(&all_workers_lock);
 }
 
-/* ── dashboard (non-scrollable via alternate screen) ──── */
+/* ── dashboard (Fixed header with scrolling logs) ──── */
 
-// Called once at program start to enter the alternate screen buffer.
-// This means the TUI lives on its own "page"; when the process exits
-// the original terminal content is fully restored, and no dashboard
-// output scrolls into the normal scrollback history.
-static void enter_alt_screen(void) {
-  printf("\033[?1049h"); // Enter alternate screen buffer
-  printf("\033[?25l");   // Hide cursor
+static int g_srv_dash_height = 8; // default minimum
+
+static void setup_ui(int height) {
+  g_srv_dash_height = height;
+  // Clear screen and set scrolling region
+  printf("\033[2J\033[H"); 
+  printf("\033[%d;r", g_srv_dash_height + 1);
+  printf("\033[%d;1H", g_srv_dash_height + 1);
   fflush(stdout);
 }
+
+
+
+static void srv_sep(const char *left, const char *mid, const char *right) {
+  printf("%s", left);
+  for (int i = 0; i < 78; i++) printf("%s", mid);
+  printf("%s\n", right);
+}
+
+static void srv_colored(const char *color, const char *text, int vis_w) {
+  printf("%s%s\033[0m", color, text);
+  int pad = vis_w - (int)strlen(text);
+  for (int i = 0; i < pad; i++) putchar(' ');
+}
+
+static void srv_num(double val, int vis_w, double warn) {
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%.1f", val);
+  if (val >= warn) printf("\033[31m%s\033[0m", buf);
+  else             printf("\033[32m%s\033[0m", buf);
+  int pad = vis_w - (int)strlen(buf);
+  for (int i = 0; i < pad; i++) putchar(' ');
+}
+
 
 void *dashboard_thread(void *arg) {
   (void)arg;
   while (1) {
     pthread_mutex_lock(&all_workers_lock);
 
-    // Jump to top-left of the alternate screen and clear it
-    printf("\033[H\033[2J");
+    // Save cursor, home, and draw dashboard
+    printf("\033[s\033[H");
 
-    printf("╔══════════════════════════════════════════════════════════════════════════╗\n");
-    printf("║   SERVER DASHBOARD  ─  UDP broadcast port %-5d                         ║\n",
-           UDP_DISCOVERY_PORT);
-    printf("╠══════════════════════════════════════════════════════════════════════════╣\n");
-    printf("║ %-15s │ %-8s │ %-8s │ %-8s │ %-14s │ %-8s ║\n",
+    /* ── header ── */
+    srv_sep("╔", "═", "╗");
+    {
+      char hdr[80];
+      snprintf(hdr, sizeof(hdr),
+               "  SERVER DASHBOARD  -  UDP Discovery Port %d",
+               UDP_DISCOVERY_PORT);
+      printf("║\033[1;36m%-78s\033[0m║\n", hdr);
+    }
+    srv_sep("╠", "═", "╣");
+
+    /* ── column header ── */
+    printf("║ \033[1m%-15s\033[0m │ \033[1m%-7s\033[0m │ \033[1m%-8s\033[0m │ \033[1m%-8s\033[0m │ \033[1m%-12s\033[0m │ \033[1m%-11s\033[0m ║\n",
            "Worker IP", "ID", "CPU(%)", "RAM(%)", "Status", "Duration");
-    printf("╠══════════════════════════════════════════════════════════════════════════╣\n");
+    srv_sep("╟", "─", "╢");
 
+    /* ── worker rows ── */
     Worker *curr = all_workers_head;
     int count = 0;
     while (curr) {
-      char buf;
-      int r = recv(curr->sock, &buf, 1, MSG_PEEK | MSG_DONTWAIT);
-      if (r == 0 || (r == -1 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+        count++;
+        curr = curr->all_next;
+    }
+
+    // Check if we need to expand the UI
+    int needed_height = count + 6;
+    if (needed_height < 8) needed_height = 8;
+    if (needed_height != g_srv_dash_height) {
+        setup_ui(needed_height);
+        printf("\033[s\033[H"); // Re-set cursor after setup_ui
+        // Re-draw border since setup_ui cleared it
+        srv_sep("╔", "═", "╗");
+        printf("║\033[1;36m  SERVER DASHBOARD  -  UDP Discovery Port %d\033[0m║\n", UDP_DISCOVERY_PORT);
+        srv_sep("╠", "═", "╣");
+    }
+
+    /* ── column header ── */
+    printf("\033[4;1H║ \033[1m%-15s\033[0m │ \033[1m%-7s\033[0m │ \033[1m%-8s\033[0m │ \033[1m%-8s\033[0m │ \033[1m%-12s\033[0m │ \033[1m%-11s\033[0m ║\n",
+           "Worker IP", "ID", "CPU(%)", "RAM(%)", "Status", "Duration");
+    srv_sep("╟", "─", "╢");
+
+    curr = all_workers_head;
+    int row = 0;
+    while (curr) {
+      char chk;
+      int r = recv(curr->sock, &chk, 1, MSG_PEEK | MSG_DONTWAIT);
+      if (r == 0 || (r == -1 && errno != EAGAIN && errno != EWOULDBLOCK))
         curr->status = -1;
-      }
 
       if (curr->status != -1) {
-        count++;
-        char status_str[48];
-        char duration_str[16] = "-";
+        row++;
+        char dur[16] = "-";
+        const char *st_color;
+        const char *st_text;
         if (curr->status == 0) {
-          snprintf(status_str, sizeof(status_str), "\033[32mIDLE\033[0m");
+          st_color = "\033[32m"; st_text = "IDLE";
         } else {
-          snprintf(status_str, sizeof(status_str), "\033[33mWORKING\033[0m");
-          time_t now = time(NULL);
-          snprintf(duration_str, sizeof(duration_str), "%lds",
-                   now - curr->start_time);
+          st_color = "\033[33m"; st_text = "WORKING";
+          snprintf(dur, sizeof(dur), "%lds", time(NULL) - curr->start_time);
         }
-        // Colour CPU/RAM red when > 80%
-        char cpu_str[32], ram_str[32];
-        if (curr->cpu_ema > 80.0)
-          snprintf(cpu_str, sizeof(cpu_str), "\033[31m%.1f\033[0m", curr->cpu_ema);
-        else
-          snprintf(cpu_str, sizeof(cpu_str), "%.1f", curr->cpu_ema);
 
-        if (curr->memory_usage > 80.0)
-          snprintf(ram_str, sizeof(ram_str), "\033[31m%.1f\033[0m", curr->memory_usage);
-        else
-          snprintf(ram_str, sizeof(ram_str), "%.1f", curr->memory_usage);
-
-        printf("║ %-15s │ %-8d │ %-8s │ %-8s │ %-14s │ %-8s ║\n",
-               curr->client_ip, curr->worker_id, cpu_str, ram_str,
-               status_str, duration_str);
+        printf("║ %-15s │ %-7d │ ", curr->client_ip, curr->worker_id);
+        srv_num(curr->cpu_ema,       8, 80.0);  printf(" │ ");
+        srv_num(curr->memory_usage,  8, 80.0);  printf(" │ ");
+        srv_colored(st_color, st_text, 12);      printf(" │ ");
+        printf("%-11s ║\n", dur);
       }
       curr = curr->all_next;
     }
 
-    if (count == 0) {
-      printf("║              No workers connected yet.                                   ║\n");
-    }
 
-    printf("╠══════════════════════════════════════════════════════════════════════════╣\n");
-    printf("║  Total Workers: %-3d                                                      ║\n", count);
-    printf("╠══════════════════════════════════════════════════════════════════════════╣\n");
-    printf("║  Recent Events:                                                           ║\n");
-    logger_lock();
-    for (int i = 0; i < LOG_RING_SIZE; i++) {
-      const char *line = logger_get_line(i);
-      if (line[0] != '\0') {
-        // Truncate long lines to fit in the box
-        char safe[74];
-        snprintf(safe, sizeof(safe), "%-73s", line);
-        printf("║  %s║\n", safe);
-      }
-    }
-    logger_unlock();
-    printf("╚══════════════════════════════════════════════════════════════════════════╝\n");
 
+
+    /* ── footer ── */
+    srv_sep("╠", "═", "╣");
+    {
+      char tot[80];
+      snprintf(tot, sizeof(tot), "  Total Workers: %-4d | System Active ", count);
+      printf("║%-78s║\n", tot);
+    }
+    srv_sep("╚", "═", "╝");
+
+    // Restore cursor to the logging area
+    printf("\033[u");
     fflush(stdout);
     pthread_mutex_unlock(&all_workers_lock);
     sleep(1);
   }
   return NULL;
 }
+
 
 /* ── task / worker queues ─────────────────────────────── */
 // end Ranjith
@@ -515,10 +556,12 @@ void *thread_func(void *arg) {
 
 int main() {
   signal(SIGPIPE, SIG_IGN);
-  logger_init("SERVER", "server.log", 0);
+  logger_init("SERVER", "server.log", 1);
 
-  // Enter the alternate screen buffer so the TUI never pollutes scrollback.
-  enter_alt_screen();
+  // Setup the TUI with fixed header and scrolling region
+  setup_ui(8);
+
+
 
   int server_fd;
   struct sockaddr_in server_addr, client_addr;
