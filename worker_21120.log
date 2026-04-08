@@ -1,0 +1,13 @@
+[2026-04-08T18:59:23.741] INFO  WORKER  | event=connected_to_server ip=127.0.0.1 worker_id=21120
+[2026-04-08T18:59:46.568] INFO  WORKER  | event=task_received task_size=16272
+[2026-04-08T18:59:46.569] INFO  WORKER  | event=task_executing filename=received_task_21120.out task_size=16272
+[2026-04-08T18:59:46.572] INFO  WORKER  | event=task_executed duration_ms=3.9 output_size=864
+[2026-04-08T18:59:46.573] INFO  WORKER  | event=result_sent worker_id=21120 output_size=864 total_sec=0 exec_ms=3.9
+[2026-04-08T19:02:17.089] INFO  WORKER  | event=task_received task_size=16272
+[2026-04-08T19:02:17.089] INFO  WORKER  | event=task_executing filename=received_task_21120.out task_size=16272
+[2026-04-08T19:02:17.093] INFO  WORKER  | event=task_executed duration_ms=3.9 output_size=860
+[2026-04-08T19:02:17.094] INFO  WORKER  | event=result_sent worker_id=21120 output_size=860 total_sec=0 exec_ms=3.9
+[2026-04-08T19:02:21.753] INFO  WORKER  | event=task_received task_size=16272
+[2026-04-08T19:02:21.753] INFO  WORKER  | event=task_executing filename=received_task_21120.out task_size=16272
+[2026-04-08T19:02:21.757] INFO  WORKER  | event=task_executed duration_ms=3.9 output_size=862
+[2026-04-08T19:02:21.758] INFO  WORKER  | event=result_sent worker_id=21120 output_size=862 total_sec=0 exec_ms=3.9

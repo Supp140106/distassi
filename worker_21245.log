@@ -1,0 +1,5 @@
+[2026-04-08T19:00:38.838] INFO  WORKER  | event=connected_to_server ip=127.0.0.1 worker_id=21245
+[2026-04-08T19:02:25.545] INFO  WORKER  | event=task_received task_size=16272
+[2026-04-08T19:02:25.545] INFO  WORKER  | event=task_executing filename=received_task_21245.out task_size=16272
+[2026-04-08T19:02:25.549] INFO  WORKER  | event=task_executed duration_ms=3.7 output_size=860
+[2026-04-08T19:02:25.549] INFO  WORKER  | event=result_sent worker_id=21245 output_size=860 total_sec=0 exec_ms=3.7

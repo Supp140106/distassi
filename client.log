@@ -1,0 +1,12 @@
+[2026-04-08T18:59:46.567] INFO  CLIENT  | event=task_compiled source=task.c output=task.out
+[2026-04-08T18:59:46.568] INFO  CLIENT  | event=task_submitted server_ip=127.0.0.1 task_size=16272
+[2026-04-08T18:59:46.573] INFO  CLIENT  | event=result_received worker_id=21120 output_size=864 round_trip_ms=5.2
+[2026-04-08T19:02:17.047] INFO  CLIENT  | event=task_compiled source=task.c output=task.out
+[2026-04-08T19:02:17.048] INFO  CLIENT  | event=task_submitted server_ip=127.0.0.1 task_size=16272
+[2026-04-08T19:02:17.094] INFO  CLIENT  | event=result_received worker_id=21120 output_size=860 round_trip_ms=45.8
+[2026-04-08T19:02:21.711] INFO  CLIENT  | event=task_compiled source=task.c output=task.out
+[2026-04-08T19:02:21.711] INFO  CLIENT  | event=task_submitted server_ip=127.0.0.1 task_size=16272
+[2026-04-08T19:02:21.758] INFO  CLIENT  | event=result_received worker_id=21120 output_size=862 round_trip_ms=46.4
+[2026-04-08T19:02:25.544] INFO  CLIENT  | event=task_compiled source=task.c output=task.out
+[2026-04-08T19:02:25.544] INFO  CLIENT  | event=task_submitted server_ip=127.0.0.1 task_size=16272
+[2026-04-08T19:02:25.549] INFO  CLIENT  | event=result_received worker_id=21245 output_size=860 round_trip_ms=4.9

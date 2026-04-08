@@ -1,0 +1,4 @@
+Write a distributed task queue system in C using socket programming and pthreads. The architecture should have clients, a centralized server, and multiple workers.
+For the logic, the server needs to maintain two queues. One is a message queue for tasks coming from clients, and the other is for available workers. When a worker connects, it should tell the server that it is in an idle state, so the server adds that worker into the free worker queue.
+Whenever there is a new task and a worker available in the queue, the server should pop both of them, assign the task to that worker, and then return the output to the client. Try to keep the code modular.
+Also, you need to handle worker failures. Sometimes a worker might fail or disconnect in the middle of a task. If that happens, the server should take that uncompleted task and push it to the front of the task queue so it gets assigned to the next available worker immediately.
