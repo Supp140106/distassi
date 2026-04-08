@@ -193,23 +193,56 @@ void *dispatcher_thread(void *arg) {
       pthread_cond_wait(&dispatch_cond, &dispatch_lock);
     }
 
+    // Dequeue oldest task (FIFO for tasks — fair to clients)
     Task *task = task_queue.front;
     task_queue.front = task_queue.front->next;
     if (task_queue.front == NULL)
       task_queue.rear = NULL;
 
-    Worker *worker = idle_workers.front;
-    idle_workers.front = idle_workers.front->next;
-    if (idle_workers.front == NULL)
-      idle_workers.rear = NULL;
+    // --- Least-Loaded Worker Selection ---
+    // Scan all idle workers and pick the one with the lowest load score.
+    // Score = 0.7 * CPU% + 0.3 * RAM%  (lower is better)
+    Worker *best = NULL;
+    Worker *best_prev = NULL;
+    double best_score = 1e18;
+
+    Worker *prev = NULL;
+    Worker *curr = idle_workers.front;
+    while (curr) {
+      double score = 0.7 * curr->cpu_usage + 0.3 * curr->memory_usage;
+      if (score < best_score) {
+        best_score = score;
+        best = curr;
+        best_prev = prev;
+      }
+      prev = curr;
+      curr = curr->next;
+    }
+
+    // Remove the chosen worker from the idle queue
+    if (best_prev == NULL) {
+      // best is the front
+      idle_workers.front = best->next;
+    } else {
+      best_prev->next = best->next;
+    }
+    if (idle_workers.rear == best) {
+      idle_workers.rear = best_prev;
+    }
+    best->next = NULL;
+
+    Worker *worker = best;
 
     pthread_mutex_lock(&worker->lock);
     worker->assigned_task = task;
     pthread_cond_signal(&worker->cond);
     pthread_mutex_unlock(&worker->lock);
 
-    log_event(LOG_INFO, "event=task_dispatched worker_id=%d task_size=%d",
-              worker->worker_id, task->size);
+    log_event(LOG_INFO,
+              "event=task_dispatched worker_id=%d task_size=%d "
+              "load_score=%.1f cpu=%.1f ram=%.1f",
+              worker->worker_id, task->size, best_score, worker->cpu_usage,
+              worker->memory_usage);
 
     pthread_mutex_unlock(&dispatch_lock);
   }
@@ -294,8 +327,8 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
     pthread_cond_init(&my_worker.cond, NULL);
 
     add_worker_global(&my_worker);
-    log_event(LOG_INFO, "event=worker_connected worker_id=%d ip=%s",
-              worker_id, client_ip);
+    log_event(LOG_INFO, "event=worker_connected worker_id=%d ip=%s", worker_id,
+              client_ip);
 
     while (1) {
       my_worker.status = 0; // IDLE
@@ -318,7 +351,8 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
           send(client_sock, task->data, task->size, 0) <= 0) {
         log_event(LOG_ERROR, "event=task_send_failed worker_id=%d",
                   my_worker.worker_id);
-        log_event(LOG_WARN, "event=task_requeued task_size=%d reason=send_failure",
+        log_event(LOG_WARN,
+                  "event=task_requeued task_size=%d reason=send_failure",
                   task->size);
         enqueue_task_front(task);
         break;
@@ -331,7 +365,8 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
           recv(client_sock, &output_size, sizeof(int), 0) <= 0) {
         log_event(LOG_ERROR, "event=result_recv_failed worker_id=%d",
                   my_worker.worker_id);
-        log_event(LOG_WARN, "event=task_requeued task_size=%d reason=recv_failure",
+        log_event(LOG_WARN,
+                  "event=task_requeued task_size=%d reason=recv_failure",
                   task->size);
         enqueue_task_front(task);
         break;
@@ -344,7 +379,8 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
         log_event(LOG_ERROR,
                   "event=result_data_failed worker_id=%d output_size=%d",
                   worker_id, output_size);
-        log_event(LOG_WARN, "event=task_requeued task_size=%d reason=recv_failure",
+        log_event(LOG_WARN,
+                  "event=task_requeued task_size=%d reason=recv_failure",
                   task->size);
         enqueue_task_front(task);
         free(output);
@@ -353,9 +389,10 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
 
       time_t end_time = time(NULL);
       long duration_sec = (long)(end_time - my_worker.start_time);
-      log_event(LOG_INFO,
-                "event=task_completed worker_id=%d output_size=%d duration_sec=%ld",
-                worker_id, output_size, duration_sec);
+      log_event(
+          LOG_INFO,
+          "event=task_completed worker_id=%d output_size=%d duration_sec=%ld",
+          worker_id, output_size, duration_sec);
 
       send(task->client_sock, &worker_id, sizeof(int), 0);
       send(task->client_sock, &output_size, sizeof(int), 0);

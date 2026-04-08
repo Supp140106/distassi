@@ -1,0 +1,18 @@
+# Compiled binaries
+server
+worker
+client
+task.out
+received_task_*.out
+
+# Log files
+*.log
+
+# Object files
+*.o
+*.out
+
+# Editor/OS files
+.DS_Store
+.vscode/
+.idea/

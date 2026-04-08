@@ -1,15 +1,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 
 int main() {
 
   int A[10][10], B[10][10], result[10][10];
-
+  sleep(10);
 
   srand(time(0));
 
- 
   for (int i = 0; i < 10; i++) {
     for (int j = 0; j < 10; j++) {
       A[i][j] = rand() % 10;
@@ -22,7 +22,6 @@ int main() {
       result[i][j] = 0;
     }
   }
-
 
   for (int i = 0; i < 10; i++) {
     for (int j = 0; j < 10; j++) {
@@ -47,7 +46,6 @@ int main() {
     }
     printf("\n");
   }
-
 
   printf("\nResult matrix:\n");
   for (int i = 0; i < 10; i++) {
