@@ -26,26 +26,17 @@ typedef struct Worker {
   int worker_id;
   int status; // 0 = IDLE, 1 = WORKING
   time_t start_time;
-
-  // Raw / smoothed resource metrics
-  double cpu_usage;     // raw latest CPU%  (updated by SEND_STATS)
-  double cpu_ema;       // exponential moving average of CPU (alpha=0.4)
-  double memory_usage;  // raw latest RAM%
-
-  int tasks_dispatched; // total tasks ever dispatched to this worker
-
-  struct Worker *next;     // For idle queue
-  struct Worker *all_next; // For global list
-
+  double cpu_usage;
+  double memory_usage;
+  Task *assigned_task;
   pthread_mutex_t lock;
   pthread_cond_t cond;
-  Task *assigned_task;
+  struct Worker *next;     // For idle queue
+  struct Worker *all_next; // For global list
 } Worker;
 
 Worker *all_workers_head = NULL;
 pthread_mutex_t all_workers_lock = PTHREAD_MUTEX_INITIALIZER;
-
-/* ── helpers ──────────────────────────────────────────── */
 
 void add_worker_global(Worker *w) {
   pthread_mutex_lock(&all_workers_lock);
@@ -67,146 +58,73 @@ void remove_worker_global(Worker *w) {
   pthread_mutex_unlock(&all_workers_lock);
 }
 
-/* ── dashboard (Fixed header with scrolling logs) ──── */
-
-static int g_srv_dash_height = 8; // default minimum
-
-static void setup_ui(int height) {
-  g_srv_dash_height = height;
-  // Clear screen and set scrolling region
-  printf("\033[2J\033[H"); 
-  printf("\033[%d;r", g_srv_dash_height + 1);
-  printf("\033[%d;1H", g_srv_dash_height + 1);
-  fflush(stdout);
-}
-
-
-
-static void srv_sep(const char *left, const char *mid, const char *right) {
-  printf("%s", left);
-  for (int i = 0; i < 78; i++) printf("%s", mid);
-  printf("%s\n", right);
-}
-
-static void srv_colored(const char *color, const char *text, int vis_w) {
-  printf("%s%s\033[0m", color, text);
-  int pad = vis_w - (int)strlen(text);
-  for (int i = 0; i < pad; i++) putchar(' ');
-}
-
-static void srv_num(double val, int vis_w, double warn) {
-  char buf[24];
-  snprintf(buf, sizeof(buf), "%.1f", val);
-  if (val >= warn) printf("\033[31m%s\033[0m", buf);
-  else             printf("\033[32m%s\033[0m", buf);
-  int pad = vis_w - (int)strlen(buf);
-  for (int i = 0; i < pad; i++) putchar(' ');
-}
-
-
 void *dashboard_thread(void *arg) {
   (void)arg;
   while (1) {
     pthread_mutex_lock(&all_workers_lock);
 
-    // Save cursor, home, and draw dashboard
-    printf("\033[s\033[H");
+    // Clear screen and move to top-left without scrolling
+    printf("\033[?25l\033[H\033[J");
 
-    /* ── header ── */
-    srv_sep("╔", "═", "╗");
-    {
-      char hdr[80];
-      snprintf(hdr, sizeof(hdr),
-               "  SERVER DASHBOARD  -  UDP Discovery Port %d",
-               UDP_DISCOVERY_PORT);
-      printf("║\033[1;36m%-78s\033[0m║\n", hdr);
-    }
-    srv_sep("╠", "═", "╣");
+    printf("==================================================================="
+           "=====================\n");
+    printf("  SERVER DASHBOARD (UDP Broadcasting on port %d)\n",
+           UDP_DISCOVERY_PORT);
+    printf("==================================================================="
+           "=====================\n");
+    printf("%-15s | %-10s | %-10s | %-10s | %-19s | %s\n", "Worker IP",
+           "Worker ID", "CPU (%)", "RAM (%)", "Status", "Duration");
+    printf("-------------------------------------------------------------------"
+           "---------------------\n");
 
-    /* ── column header ── */
-    printf("║ \033[1m%-15s\033[0m │ \033[1m%-7s\033[0m │ \033[1m%-8s\033[0m │ \033[1m%-8s\033[0m │ \033[1m%-12s\033[0m │ \033[1m%-11s\033[0m ║\n",
-           "Worker IP", "ID", "CPU(%)", "RAM(%)", "Status", "Duration");
-    srv_sep("╟", "─", "╢");
-
-    /* ── worker rows ── */
     Worker *curr = all_workers_head;
     int count = 0;
     while (curr) {
-        count++;
-        curr = curr->all_next;
-    }
-
-    // Check if we need to expand the UI
-    int needed_height = count + 6;
-    if (needed_height < 8) needed_height = 8;
-    if (needed_height != g_srv_dash_height) {
-        setup_ui(needed_height);
-        printf("\033[s\033[H"); // Re-set cursor after setup_ui
-        // Re-draw border since setup_ui cleared it
-        srv_sep("╔", "═", "╗");
-        printf("║\033[1;36m  SERVER DASHBOARD  -  UDP Discovery Port %d\033[0m║\n", UDP_DISCOVERY_PORT);
-        srv_sep("╠", "═", "╣");
-    }
-
-    /* ── column header ── */
-    printf("\033[4;1H║ \033[1m%-15s\033[0m │ \033[1m%-7s\033[0m │ \033[1m%-8s\033[0m │ \033[1m%-8s\033[0m │ \033[1m%-12s\033[0m │ \033[1m%-11s\033[0m ║\n",
-           "Worker IP", "ID", "CPU(%)", "RAM(%)", "Status", "Duration");
-    srv_sep("╟", "─", "╢");
-
-    curr = all_workers_head;
-    int row = 0;
-    while (curr) {
-      char chk;
-      int r = recv(curr->sock, &chk, 1, MSG_PEEK | MSG_DONTWAIT);
-      if (r == 0 || (r == -1 && errno != EAGAIN && errno != EWOULDBLOCK))
+      char buf;
+      int r = recv(curr->sock, &buf, 1, MSG_PEEK | MSG_DONTWAIT);
+      if (r == 0 || (r == -1 && errno != EAGAIN && errno != EWOULDBLOCK)) {
         curr->status = -1;
+      }
 
       if (curr->status != -1) {
-        row++;
-        char dur[16] = "-";
-        const char *st_color;
-        const char *st_text;
+        count++;
+        char status_str[64];
+        char duration_str[64] = "-";
         if (curr->status == 0) {
-          st_color = "\033[32m"; st_text = "IDLE";
+          sprintf(status_str, "\033[32mIDLE\033[0m"); // Green
         } else {
-          st_color = "\033[33m"; st_text = "WORKING";
-          snprintf(dur, sizeof(dur), "%lds", time(NULL) - curr->start_time);
+          sprintf(status_str, "\033[33mWORKING\033[0m"); // Yellow
+          time_t now = time(NULL);
+          sprintf(duration_str, "%lds", now - curr->start_time);
         }
-
-        printf("║ %-15s │ %-7d │ ", curr->client_ip, curr->worker_id);
-        srv_num(curr->cpu_ema,       8, 80.0);  printf(" │ ");
-        srv_num(curr->memory_usage,  8, 80.0);  printf(" │ ");
-        srv_colored(st_color, st_text, 12);      printf(" │ ");
-        printf("%-11s ║\n", dur);
+        printf("%-15s | %-10d | %-10.1f | %-10.1f | %-19s | %s\n",
+               curr->client_ip, curr->worker_id, curr->cpu_usage,
+               curr->memory_usage, status_str, duration_str);
       }
       curr = curr->all_next;
     }
 
-
-
-
-    /* ── footer ── */
-    srv_sep("╠", "═", "╣");
-    {
-      char tot[80];
-      snprintf(tot, sizeof(tot), "  Total Workers: %-4d | System Active ", count);
-      printf("║%-78s║\n", tot);
+    if (count == 0) {
+      printf("\n            No workers connected yet.\n");
     }
-    srv_sep("╚", "═", "╝");
 
-    // Restore cursor to the logging area
-    printf("\033[u");
-    fflush(stdout);
+    printf("==================================================================="
+           "=====================\n");
+    printf("Total Workers: %d\n", count);
+    printf("Recent Events:\n");
+    logger_lock();
+    for (int i = 0; i < LOG_RING_SIZE; i++) {
+      const char *line = logger_get_line(i);
+      if (line[0] != '\0') {
+        printf("  %s\n", line);
+      }
+    }
+    logger_unlock();
     pthread_mutex_unlock(&all_workers_lock);
     sleep(1);
   }
   return NULL;
 }
-
-
-/* ── task / worker queues ─────────────────────────────── */
-// end Ranjith
-// begin sahanasri
 
 typedef struct {
   Task *front;
@@ -264,41 +182,8 @@ void enqueue_worker(Worker *w) {
   pthread_cond_signal(&dispatch_cond);
   pthread_mutex_unlock(&dispatch_lock);
 }
-
-/*
- * ── Improved load-balancing dispatcher ──────────────────────────────────────
- *
- * Score formula (lower = better, pick minimum):
- *
- *   base   = 0.6 * cpu_ema  +  0.4 * ram%
- *
- *   saturation penalty:
- *     if cpu_ema  > 80  →  base += (cpu_ema  - 80) * 2.0
- *     if ram%     > 80  →  base += (ram%     - 80) * 1.5
- *
- *   fairness tiebreak:
- *     score = base + tasks_dispatched * 0.5
- *
- * The EMA (alpha = 0.4) is updated each time we receive a SEND_STATS packet,
- * giving a smooth signal that dampens short CPU spikes while still reacting
- * quickly to sustained load.
- */
-#define EMA_ALPHA 0.4
-
-static double load_score(const Worker *w) {
-  double base = 0.6 * w->cpu_ema + 0.4 * w->memory_usage;
-
-  // Saturation penalty — aggressively avoid workers near the wall
-  if (w->cpu_ema > 80.0)
-    base += (w->cpu_ema - 80.0) * 2.0;
-  if (w->memory_usage > 80.0)
-    base += (w->memory_usage - 80.0) * 1.5;
-
-  // Fairness: slightly prefer workers that have handled fewer tasks overall
-  base += w->tasks_dispatched * 0.5;
-
-  return base;
-}
+// end Ranjith
+// begin sahanasri
 
 void *dispatcher_thread(void *arg) {
   (void)arg;
@@ -308,13 +193,15 @@ void *dispatcher_thread(void *arg) {
       pthread_cond_wait(&dispatch_cond, &dispatch_lock);
     }
 
-    // Dequeue oldest task (FIFO — fair to clients)
+    // Dequeue oldest task (FIFO for tasks — fair to clients)
     Task *task = task_queue.front;
     task_queue.front = task_queue.front->next;
     if (task_queue.front == NULL)
       task_queue.rear = NULL;
 
     // --- Least-Loaded Worker Selection ---
+    // Scan all idle workers and pick the one with the lowest load score.
+    // Score = 0.7 * CPU% + 0.3 * RAM%  (lower is better)
     Worker *best = NULL;
     Worker *best_prev = NULL;
     double best_score = 1e18;
@@ -322,9 +209,9 @@ void *dispatcher_thread(void *arg) {
     Worker *prev = NULL;
     Worker *curr = idle_workers.front;
     while (curr) {
-      double s = load_score(curr);
-      if (s < best_score) {
-        best_score = s;
+      double score = 0.7 * curr->cpu_usage + 0.3 * curr->memory_usage;
+      if (score < best_score) {
+        best_score = score;
         best = curr;
         best_prev = prev;
       }
@@ -332,8 +219,9 @@ void *dispatcher_thread(void *arg) {
       curr = curr->next;
     }
 
-    // Remove chosen worker from the idle queue
+    // Remove the chosen worker from the idle queue
     if (best_prev == NULL) {
+      // best is the front
       idle_workers.front = best->next;
     } else {
       best_prev->next = best->next;
@@ -342,8 +230,6 @@ void *dispatcher_thread(void *arg) {
       idle_workers.rear = best_prev;
     }
     best->next = NULL;
-
-    best->tasks_dispatched++;
 
     Worker *worker = best;
 
@@ -354,9 +240,9 @@ void *dispatcher_thread(void *arg) {
 
     log_event(LOG_INFO,
               "event=task_dispatched worker_id=%d task_size=%d "
-              "score=%.1f cpu_ema=%.1f ram=%.1f dispatched_total=%d",
-              worker->worker_id, task->size, best_score, worker->cpu_ema,
-              worker->memory_usage, worker->tasks_dispatched);
+              "load_score=%.1f cpu=%.1f ram=%.1f",
+              worker->worker_id, task->size, best_score, worker->cpu_usage,
+              worker->memory_usage);
 
     pthread_mutex_unlock(&dispatch_lock);
   }
@@ -413,10 +299,8 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
       Worker *curr = all_workers_head;
       while (curr) {
         if (curr->worker_id == worker_id) {
-          curr->cpu_usage    = cpu;
+          curr->cpu_usage = cpu;
           curr->memory_usage = mem;
-          // Update EMA: new_ema = alpha * raw + (1-alpha) * old_ema
-          curr->cpu_ema = EMA_ALPHA * cpu + (1.0 - EMA_ALPHA) * curr->cpu_ema;
           break;
         }
         curr = curr->all_next;
@@ -434,19 +318,17 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
     Worker my_worker;
     my_worker.sock = client_sock;
     strcpy(my_worker.client_ip, client_ip);
-    my_worker.worker_id = worker_id;
+    my_worker.worker_id = worker_id; // Set ID immediately
     my_worker.status = 0;
     my_worker.cpu_usage = 0.0;
-    my_worker.cpu_ema = 0.0;
     my_worker.memory_usage = 0.0;
-    my_worker.tasks_dispatched = 0;
     my_worker.assigned_task = NULL;
     pthread_mutex_init(&my_worker.lock, NULL);
     pthread_cond_init(&my_worker.cond, NULL);
 
     add_worker_global(&my_worker);
-    log_event(LOG_INFO, "event=worker_connected worker_id=%d ip=%s", worker_id,
-              client_ip);
+    log_event(LOG_INFO, "event=worker_connected worker_id=%d ip=%s",
+              worker_id, client_ip);
 
     while (1) {
       my_worker.status = 0; // IDLE
@@ -469,35 +351,33 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
           send(client_sock, task->data, task->size, 0) <= 0) {
         log_event(LOG_ERROR, "event=task_send_failed worker_id=%d",
                   my_worker.worker_id);
-        log_event(LOG_WARN,
-                  "event=task_requeued task_size=%d reason=send_failure",
+        log_event(LOG_WARN, "event=task_requeued task_size=%d reason=send_failure",
                   task->size);
         enqueue_task_front(task);
         break;
       }
 
-      int recv_worker_id;
+      int worker_id;
       int output_size;
 
-      if (recv(client_sock, &recv_worker_id, sizeof(int), 0) <= 0 ||
+      if (recv(client_sock, &worker_id, sizeof(int), 0) <= 0 ||
           recv(client_sock, &output_size, sizeof(int), 0) <= 0) {
         log_event(LOG_ERROR, "event=result_recv_failed worker_id=%d",
                   my_worker.worker_id);
-        log_event(LOG_WARN,
-                  "event=task_requeued task_size=%d reason=recv_failure",
+        log_event(LOG_WARN, "event=task_requeued task_size=%d reason=recv_failure",
                   task->size);
         enqueue_task_front(task);
         break;
       }
 
-      char *output = malloc(output_size + 1);
-      output[output_size] = '\0';
+      my_worker.worker_id = worker_id; // Set ID here once received
+
+      char *output = malloc(output_size);
       if (recv_all(client_sock, output, output_size) == -1) {
         log_event(LOG_ERROR,
                   "event=result_data_failed worker_id=%d output_size=%d",
-                  recv_worker_id, output_size);
-        log_event(LOG_WARN,
-                  "event=task_requeued task_size=%d reason=recv_failure",
+                  worker_id, output_size);
+        log_event(LOG_WARN, "event=task_requeued task_size=%d reason=recv_failure",
                   task->size);
         enqueue_task_front(task);
         free(output);
@@ -506,18 +386,17 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
 
       time_t end_time = time(NULL);
       long duration_sec = (long)(end_time - my_worker.start_time);
-      log_event(
-          LOG_INFO,
-          "event=task_completed worker_id=%d output_size=%d duration_sec=%ld",
-          recv_worker_id, output_size, duration_sec);
+      log_event(LOG_INFO,
+                "event=task_completed worker_id=%d output_size=%d duration_sec=%ld",
+                worker_id, output_size, duration_sec);
 
-      send(task->client_sock, &recv_worker_id, sizeof(int), 0);
+      send(task->client_sock, &worker_id, sizeof(int), 0);
       send(task->client_sock, &output_size, sizeof(int), 0);
       send(task->client_sock, output, output_size, 0);
 
       log_event(LOG_INFO,
                 "event=result_relayed worker_id=%d client_fd=%d output_size=%d",
-                recv_worker_id, task->client_sock, output_size);
+                worker_id, task->client_sock, output_size);
 
       close(task->client_sock);
 
@@ -556,12 +435,7 @@ void *thread_func(void *arg) {
 
 int main() {
   signal(SIGPIPE, SIG_IGN);
-  logger_init("SERVER", "server.log", 1);
-
-  // Setup the TUI with fixed header and scrolling region
-  setup_ui(8);
-
-
+  logger_init("SERVER", "server.log", 0);
 
   int server_fd;
   struct sockaddr_in server_addr, client_addr;
@@ -591,9 +465,10 @@ int main() {
 
   if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) <
       0) {
-    // Election tie: another worker won and grabbed the port. Revert to worker.
+    // Election tie: Another worker won the election a millisecond before us and
+    // grabbed the port. Revert back to being a worker instead of shutting down.
     execl("./worker", "./worker", NULL);
-    perror("Bind failed & reverting to worker also failed");
+    perror("Bind failed & reverting to worker failed");
     exit(EXIT_FAILURE);
   }
 
@@ -613,6 +488,11 @@ int main() {
 
   pthread_create(&dash_tid, NULL, dashboard_thread, NULL);
   pthread_detach(dash_tid);
+
+  // Block prints since TUI takes over screen
+  // printf("Server listening on port %d...\n", port);
+  // printf("\n--- Connection Instructions ---\n");
+  // ...
 
   while (1) {
     addr_len = sizeof(client_addr);

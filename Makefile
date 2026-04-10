@@ -1,4 +1,4 @@
-CC     = gcc
+CC = gcc
 CFLAGS = -Wall -Wextra -g -pthread
 
 all: server worker client
@@ -13,6 +13,4 @@ client: client.c common.c common.h logger.c logger.h
 	$(CC) $(CFLAGS) client.c common.c logger.c -o client
 
 clean:
-	rm -f server worker client
-	rm -f task.out task_*.out received_task_*.out *.log
-	rm -f tests/*.out
+	rm -f server worker client task.out received_task_*.out *.log
