@@ -11,6 +11,10 @@
 // Function to reliably receive `size` bytes from `sock` into `buffer`.
 // Returns 0 on success, or -1 on network failure/disconnection.
 int recv_all(int sock, char *buffer, int size);
+ 
+// Function to reliably send `size` bytes to `sock` from `buffer`.
+// Returns 0 on success, or -1 on network failure.
+int send_all(int sock, const char *buffer, int size);
 
 // Function to resolve DNS/IP and connect securely to the target
 int connect_to_server(const char *hostname, const char *port);

@@ -22,6 +22,17 @@ int recv_all(int sock, char *buffer, int size) {
   return 0;
 }
 
+int send_all(int sock, const char *buffer, int size) {
+  int sent = 0;
+  while (sent < size) {
+    int s = send(sock, buffer + sent, size - sent, 0);
+    if (s <= 0)
+      return -1;
+    sent += s;
+  }
+  return 0;
+}
+
 int connect_to_server(const char *hostname, const char *port) {
   struct addrinfo hints, *res;
   int sockfd;

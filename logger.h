@@ -4,7 +4,7 @@
 #include <stdarg.h>
 
 #define LOG_RING_SIZE 10
-#define LOG_LINE_MAX 512
+#define LOG_LINE_MAX 1024
 
 typedef enum { LOG_INFO, LOG_WARN, LOG_ERROR } LogLevel;
 

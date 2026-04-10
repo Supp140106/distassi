@@ -62,9 +62,15 @@ int main(int argc, char *argv[]) {
     }
 
     struct timespec submit_start;
-    send(sock, &(int){SUBMIT}, sizeof(int), 0);
-    send(sock, &size, sizeof(int), 0);
-    send(sock, buffer, size, 0);
+    int type = SUBMIT;
+    if (send_all(sock, (char *)&type, sizeof(int)) == -1 ||
+        send_all(sock, (char *)&size, sizeof(int)) == -1 ||
+        send_all(sock, buffer, size) == -1) {
+      log_event(LOG_ERROR, "event=task_submission_failed server_ip=%s",
+                current_server_ip);
+      close(sock);
+      continue;
+    }
     clock_gettime(CLOCK_MONOTONIC, &submit_start);
 
     log_event(LOG_INFO, "event=task_submitted server_ip=%s task_size=%d",
@@ -76,7 +82,6 @@ int main(int argc, char *argv[]) {
     if (recv(sock, &worker_id, sizeof(int), 0) > 0) {
       if (recv(sock, &output_size, sizeof(int), 0) > 0) {
         char *output = malloc(output_size + 1);
-        output[output_size] = '\0';
         if (recv_all(sock, output, output_size) == -1) {
           log_event(LOG_ERROR, "event=result_recv_failed server_ip=%s",
                     current_server_ip);
@@ -84,6 +89,7 @@ int main(int argc, char *argv[]) {
           close(sock);
           continue;
         } else {
+          output[output_size] = '\0';
           struct timespec submit_end;
           clock_gettime(CLOCK_MONOTONIC, &submit_end);
           double wait_ms =
@@ -94,16 +100,17 @@ int main(int argc, char *argv[]) {
                     "round_trip_ms=%.1f",
                     worker_id, output_size, wait_ms);
 
-          printf("\n--- Task Execution Result ---\n");
-          printf("Worker ID: %d\n", worker_id);
-          printf("Output: %s\n", output);
-          printf("-----------------------------\n");
+          printf("\n\033[32m--- Task Execution Result ---\033[0m\n");
+          printf("Worker ID:  %d\n", worker_id);
+          printf("Output:    \n%s\n", output);
+          printf("\033[32m-----------------------------\033[0m\n");
           free(output);
           close(sock);
           break; // Success! Exit the infinite retry loop
         }
       }
-    } else {
+    }
+ else {
       log_event(LOG_ERROR, "event=server_disconnected server_ip=%s",
                 current_server_ip);
       close(sock);

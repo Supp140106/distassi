@@ -28,6 +28,7 @@ typedef struct Worker {
   time_t start_time;
   double cpu_usage;
   double memory_usage;
+  time_t last_seen;
   Task *assigned_task;
   pthread_mutex_t lock;
   pthread_cond_t cond;
@@ -37,6 +38,21 @@ typedef struct Worker {
 
 Worker *all_workers_head = NULL;
 pthread_mutex_t all_workers_lock = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct {
+  Task *front;
+  Task *rear;
+} TaskQueue;
+
+typedef struct {
+  Worker *front;
+  Worker *rear;
+} WorkerQueue;
+
+TaskQueue task_queue;
+WorkerQueue idle_workers;
+pthread_mutex_t dispatch_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t dispatch_cond = PTHREAD_COND_INITIALIZER;
 
 void add_worker_global(Worker *w) {
   pthread_mutex_lock(&all_workers_lock);
@@ -56,6 +72,25 @@ void remove_worker_global(Worker *w) {
     curr = &(*curr)->all_next;
   }
   pthread_mutex_unlock(&all_workers_lock);
+}
+
+// Ensure worker is removed from the idle queue if it disconnects
+void remove_worker_idle(Worker *w) {
+  pthread_mutex_lock(&dispatch_lock);
+  Worker **curr = &idle_workers.front;
+  Worker *prev = NULL;
+  while (*curr) {
+    if (*curr == w) {
+      *curr = w->next;
+      if (idle_workers.rear == w) {
+        idle_workers.rear = prev;
+      }
+      break;
+    }
+    prev = *curr;
+    curr = &(*curr)->next;
+  }
+  pthread_mutex_unlock(&dispatch_lock);
 }
 
 void *dashboard_thread(void *arg) {
@@ -80,27 +115,27 @@ void *dashboard_thread(void *arg) {
     Worker *curr = all_workers_head;
     int count = 0;
     while (curr) {
-      char buf;
-      int r = recv(curr->sock, &buf, 1, MSG_PEEK | MSG_DONTWAIT);
-      if (r == 0 || (r == -1 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-        curr->status = -1;
+      count++;
+      char status_str[64];
+      char duration_str[64] = "-";
+      time_t now = time(NULL);
+      
+      // Health check based on last_seen
+      int is_dead = (now - curr->last_seen > 10); // 10s timeout
+      
+      if (is_dead) {
+        sprintf(status_str, "\033[31mOFFLINE\033[0m"); // Red
+      } else if (curr->status == 0) {
+        sprintf(status_str, "\033[32mIDLE\033[0m"); // Green
+      } else {
+        sprintf(status_str, "\033[33mWORKING\033[0m"); // Yellow
+        sprintf(duration_str, "%lds", now - curr->start_time);
       }
 
-      if (curr->status != -1) {
-        count++;
-        char status_str[64];
-        char duration_str[64] = "-";
-        if (curr->status == 0) {
-          sprintf(status_str, "\033[32mIDLE\033[0m"); // Green
-        } else {
-          sprintf(status_str, "\033[33mWORKING\033[0m"); // Yellow
-          time_t now = time(NULL);
-          sprintf(duration_str, "%lds", now - curr->start_time);
-        }
-        printf("%-15s | %-10d | %-10.1f | %-10.1f | %-19s | %s\n",
-               curr->client_ip, curr->worker_id, curr->cpu_usage,
-               curr->memory_usage, status_str, duration_str);
-      }
+      printf("%-15s | %-10d | %-10.1f | %-10.1f | %-19s | %s\n",
+             curr->client_ip, curr->worker_id, curr->cpu_usage,
+             curr->memory_usage, status_str, duration_str);
+             
       curr = curr->all_next;
     }
 
@@ -110,13 +145,15 @@ void *dashboard_thread(void *arg) {
 
     printf("==================================================================="
            "=====================\n");
-    printf("Total Workers: %d\n", count);
-    printf("Recent Events:\n");
+    printf("Total Workers: %d\n\n", count);
+    printf("RECENT EVENTS:\n");
     logger_lock();
     for (int i = 0; i < LOG_RING_SIZE; i++) {
       const char *line = logger_get_line(i);
       if (line[0] != '\0') {
-        printf("  %s\n", line);
+        printf("\033[90m──────────────────────────────────────────────────"
+               "──────────────────────────────\033[0m\n");
+        printf("%s\n", line);
       }
     }
     logger_unlock();
@@ -125,21 +162,6 @@ void *dashboard_thread(void *arg) {
   }
   return NULL;
 }
-
-typedef struct {
-  Task *front;
-  Task *rear;
-} TaskQueue;
-
-typedef struct {
-  Worker *front;
-  Worker *rear;
-} WorkerQueue;
-
-TaskQueue task_queue;
-WorkerQueue idle_workers;
-pthread_mutex_t dispatch_lock = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t dispatch_cond = PTHREAD_COND_INITIALIZER;
 
 void init_queues() {
   task_queue.front = task_queue.rear = NULL;
@@ -239,9 +261,9 @@ void *dispatcher_thread(void *arg) {
     pthread_mutex_unlock(&worker->lock);
 
     log_event(LOG_INFO,
-              "event=task_dispatched worker_id=%d task_size=%d "
-              "load_score=%.1f cpu=%.1f ram=%.1f",
-              worker->worker_id, task->size, best_score, worker->cpu_usage,
+              "event=task_dispatched worker_id=%d logic=least_loaded "
+              "rationale=\"Lowest score %.1f (CPU: %.1f%%, RAM: %.1f%%)\"",
+              worker->worker_id, best_score, worker->cpu_usage,
               worker->memory_usage);
 
     pthread_mutex_unlock(&dispatch_lock);
@@ -301,6 +323,7 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
         if (curr->worker_id == worker_id) {
           curr->cpu_usage = cpu;
           curr->memory_usage = mem;
+          curr->last_seen = time(NULL);
           break;
         }
         curr = curr->all_next;
@@ -315,68 +338,70 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
       return;
     }
 
-    Worker my_worker;
-    my_worker.sock = client_sock;
-    strcpy(my_worker.client_ip, client_ip);
-    my_worker.worker_id = worker_id; // Set ID immediately
-    my_worker.status = 0;
-    my_worker.cpu_usage = 0.0;
-    my_worker.memory_usage = 0.0;
-    my_worker.assigned_task = NULL;
-    pthread_mutex_init(&my_worker.lock, NULL);
-    pthread_cond_init(&my_worker.cond, NULL);
+    Worker *my_worker = malloc(sizeof(Worker));
+    my_worker->sock = client_sock;
+    strcpy(my_worker->client_ip, client_ip);
+    my_worker->worker_id = worker_id;
+    my_worker->status = 0;
+    my_worker->cpu_usage = 0.0;
+    my_worker->memory_usage = 0.0;
+    my_worker->last_seen = time(NULL);
+    my_worker->assigned_task = NULL;
+    pthread_mutex_init(&my_worker->lock, NULL);
+    pthread_cond_init(&my_worker->cond, NULL);
 
-    add_worker_global(&my_worker);
+    add_worker_global(my_worker);
     log_event(LOG_INFO, "event=worker_connected worker_id=%d ip=%s",
               worker_id, client_ip);
 
     while (1) {
-      my_worker.status = 0; // IDLE
-      enqueue_worker(&my_worker);
+      my_worker->status = 0; // IDLE
+      enqueue_worker(my_worker);
 
-      pthread_mutex_lock(&my_worker.lock);
-      while (my_worker.assigned_task == NULL) {
-        pthread_cond_wait(&my_worker.cond, &my_worker.lock);
+      pthread_mutex_lock(&my_worker->lock);
+      while (my_worker->assigned_task == NULL) {
+        // We also check connection status here eventually
+        pthread_cond_wait(&my_worker->cond, &my_worker->lock);
       }
-      Task *task = my_worker.assigned_task;
-      my_worker.assigned_task = NULL;
-      my_worker.status = 1; // WORKING
-      my_worker.start_time = time(NULL);
-      pthread_mutex_unlock(&my_worker.lock);
+      Task *task = my_worker->assigned_task;
+      my_worker->assigned_task = NULL;
+      my_worker->status = 1; // WORKING
+      my_worker->start_time = time(NULL);
+      pthread_mutex_unlock(&my_worker->lock);
+
+      if (task == NULL) break; // Signal to terminate worker thread
 
       log_event(LOG_INFO, "event=task_sending worker_id=%d task_size=%d",
-                my_worker.worker_id, task->size);
+                my_worker->worker_id, task->size);
 
-      if (send(client_sock, &task->size, sizeof(int), 0) <= 0 ||
-          send(client_sock, task->data, task->size, 0) <= 0) {
+      if (send_all(client_sock, (char *)&task->size, sizeof(int)) == -1 ||
+          send_all(client_sock, task->data, task->size) == -1) {
         log_event(LOG_ERROR, "event=task_send_failed worker_id=%d",
-                  my_worker.worker_id);
+                  my_worker->worker_id);
         log_event(LOG_WARN, "event=task_requeued task_size=%d reason=send_failure",
                   task->size);
         enqueue_task_front(task);
         break;
       }
 
-      int worker_id;
+      int res_worker_id;
       int output_size;
 
-      if (recv(client_sock, &worker_id, sizeof(int), 0) <= 0 ||
+      if (recv(client_sock, &res_worker_id, sizeof(int), 0) <= 0 ||
           recv(client_sock, &output_size, sizeof(int), 0) <= 0) {
         log_event(LOG_ERROR, "event=result_recv_failed worker_id=%d",
-                  my_worker.worker_id);
+                  my_worker->worker_id);
         log_event(LOG_WARN, "event=task_requeued task_size=%d reason=recv_failure",
                   task->size);
         enqueue_task_front(task);
         break;
       }
 
-      my_worker.worker_id = worker_id; // Set ID here once received
-
       char *output = malloc(output_size);
       if (recv_all(client_sock, output, output_size) == -1) {
         log_event(LOG_ERROR,
                   "event=result_data_failed worker_id=%d output_size=%d",
-                  worker_id, output_size);
+                  res_worker_id, output_size);
         log_event(LOG_WARN, "event=task_requeued task_size=%d reason=recv_failure",
                   task->size);
         enqueue_task_front(task);
@@ -385,18 +410,21 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
       }
 
       time_t end_time = time(NULL);
-      long duration_sec = (long)(end_time - my_worker.start_time);
+      long duration_sec = (long)(end_time - my_worker->start_time);
       log_event(LOG_INFO,
                 "event=task_completed worker_id=%d output_size=%d duration_sec=%ld",
-                worker_id, output_size, duration_sec);
+                res_worker_id, output_size, duration_sec);
 
-      send(task->client_sock, &worker_id, sizeof(int), 0);
-      send(task->client_sock, &output_size, sizeof(int), 0);
-      send(task->client_sock, output, output_size, 0);
-
-      log_event(LOG_INFO,
-                "event=result_relayed worker_id=%d client_fd=%d output_size=%d",
-                worker_id, task->client_sock, output_size);
+      // Relay back to client
+      if (send_all(task->client_sock, (char *)&res_worker_id, sizeof(int)) == -1 ||
+          send_all(task->client_sock, (char *)&output_size, sizeof(int)) == -1 ||
+          send_all(task->client_sock, output, output_size) == -1) {
+        log_event(LOG_ERROR, "event=relay_failed client_fd=%d", task->client_sock);
+      } else {
+        log_event(LOG_INFO,
+                  "event=result_relayed worker_id=%d client_fd=%d output_size=%d",
+                  res_worker_id, task->client_sock, output_size);
+      }
 
       close(task->client_sock);
 
@@ -406,11 +434,15 @@ void handle_connection(int client_sock, struct sockaddr_in client_addr) {
     }
 
     log_event(LOG_WARN, "event=worker_disconnected worker_id=%d ip=%s",
-              my_worker.worker_id, my_worker.client_ip);
-    remove_worker_global(&my_worker);
+              my_worker->worker_id, my_worker->client_ip);
+    
+    remove_worker_global(my_worker);
+    remove_worker_idle(my_worker);
     close(client_sock);
-    pthread_mutex_destroy(&my_worker.lock);
-    pthread_cond_destroy(&my_worker.cond);
+    
+    pthread_mutex_destroy(&my_worker->lock);
+    pthread_cond_destroy(&my_worker->cond);
+    free(my_worker);
   } else {
     close(client_sock);
   }

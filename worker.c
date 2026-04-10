@@ -127,6 +127,8 @@ void *worker_dashboard_thread(void *arg) {
     for (int i = 0; i < LOG_RING_SIZE; i++) {
       const char *line = logger_get_line(i);
       if (line[0] != '\0') {
+        printf("\033[90m──────────────────────────────────────────────────"
+               "──────────────────────────────\033[0m\n");
         printf("  %s\n", line);
       }
     }
@@ -180,8 +182,12 @@ int main(int argc, char *argv[]) {
       }
       int req_type = REQUEST_TASK;
       int my_id = getpid();
-      send(current_sock, &req_type, sizeof(int), 0);
-      send(current_sock, &my_id, sizeof(int), 0);
+      if (send_all(current_sock, (char *)&req_type, sizeof(int)) == -1 ||
+          send_all(current_sock, (char *)&my_id, sizeof(int)) == -1) {
+        close(current_sock);
+        current_sock = -1;
+        continue;
+      }
       worker_state = 1; // IDLE
       log_event(LOG_INFO, "event=connected_to_server ip=%s worker_id=%d",
                 current_server_ip, my_id);
@@ -190,6 +196,14 @@ int main(int argc, char *argv[]) {
     int size;
     if (recv(current_sock, &size, sizeof(int), 0) <= 0) {
       log_event(LOG_WARN, "event=server_connection_lost stage=recv_size");
+      close(current_sock);
+      current_sock = -1;
+      continue;
+    }
+
+    // Basic safety check: don't accept tasks that are suspiciously small or huge
+    if (size <= 0 || size > 100 * 1024 * 1024) { // 100MB limit for example
+      log_event(LOG_ERROR, "event=invalid_task_size size=%d", size);
       close(current_sock);
       current_sock = -1;
       continue;
@@ -237,17 +251,21 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    char output_buffer[4096] = {0};
+    char *output_buffer = NULL;
     int total_read = 0;
-    while (fgets(output_buffer + total_read, sizeof(output_buffer) - total_read,
-                 pipe) != NULL) {
-      total_read = strlen(output_buffer);
+    int buffer_size = 1024;
+    output_buffer = malloc(buffer_size);
 
-      // We can also periodically check connection status while working
-      if (worker_state == 3) {
-        // You could optionally break here to kill the task early,
-        // or just continue and let the send fail later.
+    char temp_buf[512];
+    while (fgets(temp_buf, sizeof(temp_buf), pipe) != NULL) {
+      int len = strlen(temp_buf);
+      if (total_read + len + 1 > buffer_size) {
+        buffer_size *= 2;
+        output_buffer = realloc(output_buffer, buffer_size);
       }
+      memcpy(output_buffer + total_read, temp_buf, len);
+      total_read += len;
+      output_buffer[total_read] = '\0';
     }
     pclose(pipe);
 
@@ -259,15 +277,16 @@ int main(int argc, char *argv[]) {
               exec_duration_ms, total_read);
 
     int worker_id = getpid();
-    if (send(current_sock, &worker_id, sizeof(int), 0) <= 0 ||
-        send(current_sock, &total_read, sizeof(int), 0) <= 0 ||
-        send(current_sock, output_buffer, total_read, 0) <= 0) {
+    if (send_all(current_sock, (char *)&worker_id, sizeof(int)) == -1 ||
+        send_all(current_sock, (char *)&total_read, sizeof(int)) == -1 ||
+        send_all(current_sock, output_buffer, total_read) == -1) {
       log_event(LOG_ERROR,
                 "event=result_send_failed worker_id=%d output_size=%d",
                 worker_id, total_read);
       close(current_sock);
       current_sock = -1;
       free(buffer);
+      free(output_buffer);
       remove(filename);
       continue;
     }
@@ -279,6 +298,7 @@ int main(int argc, char *argv[]) {
               worker_id, total_read, total_elapsed, exec_duration_ms);
 
     free(buffer);
+    free(output_buffer);
     remove(filename);
     worker_state = 1; // Back to IDLE
     // Loop back to wait for the next task on the same socket
