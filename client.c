@@ -20,13 +20,15 @@ int main(int argc, char *argv[]) {
   char source_file[256] = "task.c";
 
   if (argc >= 2) {
-    strcpy(current_server_ip, argv[1]);
-  }
-  if (argc >= 3) {
-    port = argv[2];
-  }
-  if (argc >= 4) {
-    strcpy(source_file, argv[3]);
+    if (strstr(argv[1], ".c") != NULL) {
+      strcpy(source_file, argv[1]);
+      if (argc >= 3) strcpy(current_server_ip, argv[2]);
+      if (argc >= 4) port = argv[3];
+    } else {
+      strcpy(current_server_ip, argv[1]);
+      if (argc >= 3) port = argv[2];
+      if (argc >= 4) strcpy(source_file, argv[3]);
+    }
   }
 
   char compile_cmd[512];

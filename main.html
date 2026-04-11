@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed Code Execution Animation</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --server-color: #3b82f6;
+            --worker-bg: #1e293b;
+            --worker-idle: #22c55e;
+            --worker-busy: #eab308;
+            --worker-dead: #ef4444;
+            --client-color: #a855f7;
+            --text-color: #f8fafc;
+            --font-family: 'Inter', -apple-system, sans-serif;
+            --packet-color: #0ea5e9;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .header {
+            margin-top: 30px;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            font-size: 1.1rem;
+            color: #94a3b8;
+            margin-bottom: 20px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            z-index: 10;
+        }
+
+        button {
+            background-color: #334155;
+            color: white;
+            border: 1px solid #475569;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            background-color: #475569;
+        }
+
+        .btn-client {
+            background-color: rgba(168, 85, 247, 0.2);
+            border-color: var(--client-color);
+        }
+
+        .btn-client:hover {
+            background-color: rgba(168, 85, 247, 0.4);
+        }
+
+        .btn-failover {
+            background-color: rgba(239, 68, 68, 0.2);
+            border-color: var(--worker-dead);
+        }
+
+        .btn-failover:hover {
+            background-color: rgba(239, 68, 68, 0.4);
+        }
+
+        .btn-crash {
+            background-color: rgba(234, 179, 8, 0.2);
+            border-color: var(--worker-busy);
+        }
+
+        .btn-crash:hover {
+            background-color: rgba(234, 179, 8, 0.4);
+        }
+
+        .system-container {
+            position: relative;
+            width: 900px;
+            height: 500px;
+            margin-top: 20px;
+        }
+
+        /* Server Box */
+        .server-container {
+            position: absolute;
+            left: 50%;
+            top: 40%;
+            transform: translate(-50%, -50%);
+            width: 280px;
+            height: 220px;
+            background-color: rgba(59, 130, 246, 0.1);
+            border: 2px solid var(--server-color);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 15px;
+            box-shadow: 0 0 30px rgba(59, 130, 246, 0.2);
+            transition: all 0.5s;
+            z-index: 2;
+        }
+
+        .server-title {
+            font-weight: bold;
+            font-size: 1.2rem;
+            color: #60a5fa;
+            margin-bottom: 10px;
+        }
+
+        .queue {
+            width: 90%;
+            height: 60px;
+            background-color: rgba(15, 23, 42, 0.5);
+            border: 1px dashed #475569;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            padding: 5px;
+            margin-bottom: 15px;
+            gap: 5px;
+            overflow: hidden;
+        }
+
+        .queue-title {
+            font-size: 0.8rem;
+            color: #94a3b8;
+            margin-bottom: 4px;
+            align-self: flex-start;
+        }
+
+        .task-item {
+            width: 30px;
+            height: 30px;
+            background-color: var(--client-color);
+            border-radius: 4px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 0.7rem;
+            font-weight: bold;
+            animation: popIn 0.3s ease-out forwards;
+        }
+
+        /* Workers */
+        .workers-container {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            display: flex;
+            justify-content: space-around;
+            padding: 0 20px;
+        }
+
+        .worker {
+            width: 160px;
+            background-color: var(--worker-bg);
+            border: 2px solid #475569;
+            border-radius: 12px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+            transition: all 0.5s;
+        }
+
+        .worker-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--worker-idle);
+            box-shadow: 0 0 10px var(--worker-idle);
+        }
+
+        .stats {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            font-size: 0.8rem;
+            color: #cbd5e1;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 8px;
+            border-radius: 6px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .load-score {
+            margin-top: 5px;
+            border-top: 1px dashed #475569;
+            padding-top: 5px;
+            text-align: center;
+            color: #38bdf8;
+            font-weight: bold;
+        }
+
+        /* Clients */
+        .clients-container {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            gap: 150px;
+            z-index: 10;
+        }
+
+        .client {
+            width: 100px;
+            background-color: rgba(168, 85, 247, 0.1);
+            border: 2px solid var(--client-color);
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+        }
+
+        /* Packets / Animations */
+        .packet {
+            position: absolute;
+            width: 15px;
+            height: 15px;
+            background-color: var(--packet-color);
+            border-radius: 50%;
+            box-shadow: 0 0 15px var(--packet-color);
+            z-index: 5;
+            transition: all 1s cubic-bezier(0.4, 0, 0.2, 1);
+            opacity: 0;
+        }
+
+        .log-panel {
+            position: absolute;
+            right: -250px;
+            top: 0;
+            width: 250px;
+            height: 100%;
+            background-color: rgba(15, 23, 42, 0.8);
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 15px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            border-bottom: 1px solid #334155;
+            padding-bottom: 8px;
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes popIn {
+            0% {
+                transform: scale(0);
+            }
+
+            80% {
+                transform: scale(1.1);
+            }
+
+            100% {
+                transform: scale(1);
+            }
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-5px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulseAlert {
+            0% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            }
+
+            70% {
+                box-shadow: 0 0 0 15px rgba(239, 68, 68, 0);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+
+        .server-offline {
+            border-color: var(--worker-dead) !important;
+            background-color: rgba(239, 68, 68, 0.1) !important;
+        }
+
+        .worker-promoted {
+            border-color: var(--server-color) !important;
+            background-color: rgba(59, 130, 246, 0.1) !important;
+            transform: translateY(-20px) scale(1.05);
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.4);
+        }
+
+        .task-progress {
+            margin-top: 10px;
+            width: 100%;
+            height: 6px;
+            background: #1e293b;
+            border-radius: 3px;
+            overflow: hidden;
+            display: none;
+        }
+
+        .task-progress-bar {
+            height: 100%;
+            background: var(--worker-busy);
+            width: 0%;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="header">
+        <h1>Distributed Code Execution</h1>
+        <div class="subtitle">Fault Tolerant | Load Balanced | Peer-to-Peer Backed</div>
+    </div>
+
+    <div class="controls">
+        <button class="btn-client" onclick="simulateClientSubmit()">Submit Task</button>
+        <button class="btn-crash" onclick="simulateWorkerCrash()">Simulate Worker Crash</button>
+        <button class="btn-failover" onclick="simulateServerFailover()">Simulate Server Failure</button>
+    </div>
+
+    <div class="system-container" id="sys-container">
+        <!-- Clients -->
+        <div class="clients-container">
+            <div class="client" id="client1">Client A</div>
+            <div class="client" id="client2">Client B</div>
+        </div>
+
+        <!-- Server -->
+        <div class="server-container" id="server">
+            <div class="server-title">Broker Server</div>
+            <div style="width: 100%;">
+                <div class="queue-title">Task Queue (Front <--)< /div>
+                        <div class="queue" id="task-queue"></div>
+                </div>
+                <div style="font-size: 0.8rem; color: #94a3b8; text-align: center; margin-top: 5px;">
+                    Receiving Telemetry...<br>
+                    Dispatching &rarr; min(0.7*CPU + 0.3*RAM)
+                </div>
+            </div>
+
+            <!-- Workers -->
+            <div class="workers-container" id="workers">
+                <!-- Populated by JS -->
+            </div>
+
+            <!-- Logger -->
+            <div class="log-panel" id="logger">
+                <div
+                    style="color: #cbd5e1; margin-bottom: 10px; font-weight: bold; border-bottom: 2px solid #475569; padding-bottom: 5px;">
+                    SYSTEM LOGS</div>
+            </div>
+        </div>
+
+        <script>
+            const sysContainer = document.getElementById('sys-container');
+            const taskQueue = document.getElementById('task-queue');
+            const workersContainer = document.getElementById('workers');
+            const logger = document.getElementById('logger');
+
+            let taskCount = 0;
+            let serverActive = true;
+            let workers = [
+                { id: 'W1', cpu: 45, ram: 60, status: 'idle', dead: false, promoted: false },
+                { id: 'W2', cpu: 85, ram: 80, status: 'idle', dead: false, promoted: false },
+                { id: 'W3', cpu: 20, ram: 30, status: 'idle', dead: false, promoted: false }
+            ];
+
+            // Initialize Workers UI
+            function renderWorkers() {
+                workersContainer.innerHTML = '';
+                workers.forEach((w, index) => {
+                    const score = (0.7 * w.cpu + 0.3 * w.ram).toFixed(1);
+                    let statusColor = w.status === 'idle' ? 'var(--worker-idle)' : (w.status === 'working' ? 'var(--worker-busy)' : 'var(--worker-dead)');
+                    if (w.dead) statusColor = 'var(--worker-dead)';
+                    if (w.promoted) statusColor = 'var(--server-color)';
+
+                    let uiClass = 'worker';
+                    if (w.dead) uiClass += ' dead';
+                    if (w.promoted) uiClass += ' worker-promoted';
+
+                    const wHtml = `
+                <div class="${uiClass}" id="worker-${index}" style="${w.dead ? 'opacity: 0.5; filter: grayscale(1);' : ''}">
+                    <div class="worker-title">
+                        <div class="status-dot" style="background-color: ${statusColor}; box-shadow: 0 0 10px ${statusColor}"></div>
+                        ${w.promoted ? 'NEW SERVER (' + w.id + ')' : 'Worker ' + w.id}
+                    </div>
+                    <div class="stats">
+                        <div class="stat-row"><span>CPU:</span> <span>${w.cpu}%</span></div>
+                        <div class="stat-row"><span>RAM:</span> <span>${w.ram}%</span></div>
+                        <div class="load-score">Score: ${score}</div>
+                    </div>
+                    <div class="task-progress" id="prog-${index}">
+                        <div class="task-progress-bar" id="prog-bar-${index}"></div>
+                    </div>
+                </div>
+            `;
+                    workersContainer.innerHTML += wHtml;
+                });
+            }
+
+            renderWorkers();
+
+            // Fluctuating Telemetry
+            setInterval(() => {
+                if (!serverActive && !workers.some(w => w.promoted)) return;
+                workers.forEach(w => {
+                    if (w.dead || w.status === 'working' || w.promoted) return;
+                    // random fluctuate
+                    w.cpu = Math.max(10, Math.min(95, w.cpu + (Math.floor(Math.random() * 20) - 10)));
+                    w.ram = Math.max(20, Math.min(90, w.ram + (Math.floor(Math.random() * 10) - 5)));
+                });
+                renderWorkers();
+            }, 2000);
+
+            function logEvent(msg, type = 'info') {
+                let color = '#94a3b8';
+                if (type === 'success') color = '#4ade80';
+                if (type === 'warn') color = '#facc15';
+                if (type === 'error') color = '#f87171';
+                if (type === 'event') color = '#38bdf8';
+
+                const d = new Date();
+                const time = `${d.getHours()}:${d.getMinutes()}:${d.getSeconds()}`;
+
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                entry.innerHTML = `<span style="color:#64748b">[${time}]</span> <span style="color:${color}">${msg}</span>`;
+                logger.insertBefore(entry, logger.children[1]);
+            }
+
+            function createPacket(startX, startY, endX, endY, color, callback) {
+                const packet = document.createElement('div');
+                packet.className = 'packet';
+                packet.style.backgroundColor = color;
+                packet.style.boxShadow = `0 0 15px ${color}`;
+                packet.style.left = startX + 'px';
+                packet.style.top = startY + 'px';
+                sysContainer.appendChild(packet);
+
+                // Force reflow
+                packet.offsetWidth;
+
+                packet.style.opacity = '1';
+                packet.style.left = endX + 'px';
+                packet.style.top = endY + 'px';
+
+                setTimeout(() => {
+                    packet.style.opacity = '0';
+                    setTimeout(() => {
+                        if (packet.parentNode) {
+                            sysContainer.removeChild(packet);
+                        }
+                        if (callback) callback();
+                    }, 300);
+                }, 1000);
+            }
+
+            // Workflows
+            function simulateClientSubmit() {
+                if (!serverActive && !workers.some(w => w.promoted)) {
+                    logEvent("No active server to process requests!", "error");
+                    return;
+                }
+
+                taskCount++;
+                const tid = "T" + taskCount;
+                logEvent(`Client submitted task ${tid}`, 'info');
+
+                // Which client?
+                const clientRect = document.getElementById(Math.random() > 0.5 ? 'client1' : 'client2').getBoundingClientRect();
+                const sysRect = sysContainer.getBoundingClientRect();
+
+                let serverRect;
+                if (serverActive) {
+                    serverRect = document.getElementById('server').getBoundingClientRect();
+                } else {
+                    const promotedIdx = workers.findIndex(w => w.promoted);
+                    serverRect = document.getElementById(`worker-${promotedIdx}`).getBoundingClientRect();
+                }
+
+                // Send to server
+                createPacket(
+                    clientRect.left + clientRect.width / 2 - sysRect.left,
+                    clientRect.bottom - sysRect.top,
+                    serverRect.left + serverRect.width / 2 - sysRect.left,
+                    serverRect.top - sysRect.top + 20,
+                    'var(--packet-color)',
+                    () => {
+                        // Add to queue
+                        const tEl = document.createElement('div');
+                        tEl.className = 'task-item';
+                        tEl.id = `task-${tid}`;
+                        tEl.innerText = tid;
+                        taskQueue.appendChild(tEl);
+                        logEvent(`Task ${tid} buffered. Calculating Load...`, 'info');
+
+                        setTimeout(() => dispatchTask(tid, tEl), 1000);
+                    }
+                );
+            }
+
+            function dispatchTask(tid, nodeEl, forcedWorkerIndex = -1) {
+                if (forcedWorkerIndex === -1 && nodeEl && nodeEl.parentNode) {
+                    taskQueue.removeChild(nodeEl);
+                }
+
+                // Find best worker map
+                let bestScore = 999;
+                let bestIdx = -1;
+
+                workers.forEach((w, i) => {
+                    if (!w.dead && !w.promoted && w.status === 'idle') {
+                        let score = 0.7 * w.cpu + 0.3 * w.ram;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestIdx = i;
+                        }
+                    }
+                });
+
+                if (bestIdx === -1) {
+                    logEvent(`No idle workers for ${tid}, requeueing...`, 'warn');
+                    taskQueue.insertBefore(nodeEl, taskQueue.firstChild);
+                    return;
+                }
+
+                if (forcedWorkerIndex !== -1) {
+                    bestIdx = forcedWorkerIndex;
+                }
+
+                const worker = workers[bestIdx];
+                worker.status = 'working';
+                worker.currentTask = tid;
+                renderWorkers();
+
+                logEvent(`LoadBalancer selected Worker ${worker.id} cost min=(${bestScore.toFixed(1)})`, 'event');
+
+                let serverRect;
+                if (serverActive) {
+                    serverRect = document.getElementById('server').getBoundingClientRect();
+                } else {
+                    const promotedIdx = workers.findIndex(w => w.promoted);
+                    serverRect = document.getElementById(`worker-${promotedIdx}`).getBoundingClientRect();
+                }
+
+                const wRect = document.getElementById(`worker-${bestIdx}`).getBoundingClientRect();
+                const sysRect = sysContainer.getBoundingClientRect();
+
+                // Send to worker
+                createPacket(
+                    serverRect.left + serverRect.width / 2 - sysRect.left,
+                    serverRect.bottom - sysRect.top,
+                    wRect.left + wRect.width / 2 - sysRect.left,
+                    wRect.top - sysRect.top,
+                    'var(--worker-busy)',
+                    () => {
+                        logEvent(`Worker ${worker.id} compiling/executing ${tid}...`, 'warn');
+                        document.getElementById(`prog-${bestIdx}`).style.display = 'block';
+                        const bar = document.getElementById(`prog-bar-${bestIdx}`);
+
+                        let p = 0;
+                        let failTriggered = false;
+
+                        const interval = setInterval(() => {
+                            p += 20;
+                            if (bar) bar.style.width = p + '%';
+
+                            if (worker.dead && !failTriggered) {
+                                clearInterval(interval);
+                                failTriggered = true;
+                                logEvent(`CRITICAL: Worker ${worker.id} disconnected during task ${tid}!`, 'error');
+                                requeueTask(tid);
+                                return;
+                            }
+
+                            if (p >= 100 && !worker.dead) {
+                                clearInterval(interval);
+                                logEvent(`Worker ${worker.id} finished ${tid}, sending output...`, 'success');
+
+                                // Output packet
+                                createPacket(
+                                    wRect.left + wRect.width / 2 - sysRect.left,
+                                    wRect.top - sysRect.top,
+                                    serverRect.left + serverRect.width / 2 - sysRect.left,
+                                    serverRect.bottom - sysRect.top,
+                                    'var(--worker-idle)',
+                                    () => {
+                                        worker.status = 'idle';
+                                        worker.currentTask = null;
+                                        renderWorkers();
+                                        logEvent(`Server relayed output of ${tid} to Client`, 'success');
+
+                                        // Relay back
+                                        const clientRect = document.getElementById('client2').getBoundingClientRect();
+                                        createPacket(
+                                            serverRect.left + serverRect.width / 2 - sysRect.left,
+                                            serverRect.top - sysRect.top,
+                                            clientRect.left + clientRect.width / 2 - sysRect.left,
+                                            clientRect.bottom - sysRect.top,
+                                            '#4ade80'
+                                        );
+                                    }
+                                );
+                            }
+                        }, 500);
+                    }
+                );
+            }
+
+            function requeueTask(tid) {
+                logEvent(`Requeueing ${tid} to FRONT of queue`, 'warn');
+                const tEl = document.createElement('div');
+                tEl.className = 'task-item';
+                tEl.id = `task-${tid}`;
+                tEl.innerText = tid;
+                tEl.style.backgroundColor = '#facc15'; // yellow highlight for retry
+                taskQueue.insertBefore(tEl, taskQueue.firstChild);
+
+                setTimeout(() => dispatchTask(tid, tEl), 2000);
+            }
+
+            function simulateWorkerCrash() {
+                // Find a working worker preferably
+                let activeW = workers.findIndex(w => w.status === 'working' && !w.dead && !w.promoted);
+                if (activeW === -1) {
+                    activeW = workers.findIndex(w => w.status === 'idle' && !w.dead && !w.promoted);
+                }
+
+                if (activeW !== -1) {
+                    workers[activeW].dead = true;
+                    renderWorkers();
+                    const el = document.getElementById(`worker-${activeW}`);
+                    el.style.animation = 'pulseAlert 1s infinite';
+                } else {
+                    logEvent("No eligible workers to crash.", "warn");
+                }
+            }
+
+            function simulateServerFailover() {
+                if (!serverActive) return;
+
+                logEvent("CRITICAL ALERT: CENTRAL BROKER CRASHED", "error");
+                serverActive = false;
+
+                const sEl = document.getElementById('server');
+                sEl.classList.add('server-offline');
+                sEl.style.animation = 'pulseAlert 1s 3';
+                sEl.innerHTML = '<div class="server-title" style="color:#ef4444">OFFLINE</div><div>SPOF Triggered</div>';
+
+                // Worker election timeout
+                let count = 3;
+                logEvent("Workers initiating randomized timeout election...", "event");
+
+                const countdown = setInterval(() => {
+                    logEvent(`Election timeout in ${count}...`, 'warn');
+                    count--;
+                    if (count === 0) {
+                        clearInterval(countdown);
+
+                        // Elect W1 normally if alive, else W2
+                        let electIdx = workers.findIndex(w => !w.dead);
+                        if (electIdx !== -1) {
+                            workers[electIdx].promoted = true;
+                            workers[electIdx].status = 'working'; // acts as server
+                            renderWorkers();
+                            logEvent(`Worker ${workers[electIdx].id} won election! Calling execl("./server").`, 'success');
+
+                            // Show animation logic
+                            document.getElementById(`worker-${electIdx}`).querySelector('.stats').innerHTML = '<div style="color:#38bdf8; font-weight:bold; margin-top: 10px;">PROMOTED TO SERVER</div>';
+
+                        }
+                    }
+                }, 1000);
+            }
+
+        </script>
+</body>
+
+</html>
